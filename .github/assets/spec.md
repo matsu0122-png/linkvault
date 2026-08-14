@@ -36,10 +36,14 @@ PostgreSQLで以下の3テーブルを管理する。
 | description | TEXT        | ページの説明文（自動取得、`NOT NULL DEFAULT ''`） |
 | image_url   | TEXT        | OGP画像のURL（自動取得、`NOT NULL DEFAULT ''`） |
 | favicon_url | TEXT        | faviconのURL（自動取得、`NOT NULL DEFAULT ''`） |
+| status      | TEXT        | 生存確認の結果。`unknown` / `ok` / `broken`のいずれか（`CHECK`制約、`NOT NULL DEFAULT 'unknown'`） |
+| checked_at  | TIMESTAMPTZ | 最終チェック日時（未チェックならNULL）        |
 | created_at  | TIMESTAMP   | 登録日時                  |
 | updated_at  | TIMESTAMP   | 最終更新日時                |
 
-`description` / `image_url` / `favicon_url`はユーザーが直接編集する手段を持たない（`PUT`のリクエストボディにも含まれない）。`POST`時の自動取得でのみ設定され、以降は`Update`で上書きされることなく保持される。
+`description` / `image_url` / `favicon_url` / `status` / `checked_at`はユーザーが直接編集する手段を持たない（`PUT`のリクエストボディにも含まれない）。前者3つは`POST`時の自動取得、後者2つは`POST /api/links/check`でのみ設定され、以降は`Update`で上書きされることなく保持される。
+
+`checked_at`のみ他の日時カラムと異なり`TIMESTAMPTZ`（タイムゾーン付き）にしている。`created_at`/`updated_at`は初期マイグレーションから`TIMESTAMP`（タイムゾーン無し）のままだが、これはアプリケーションが常にサーバーのローカル時刻で書き込む前提で運用されており、これまで実害が出ていないため据え置いている。`checked_at`は実装時に`TIMESTAMP`で試したところ、書き込み時と読み出し時でオフセットがずれる不具合が実際に発生したため、素直に`TIMESTAMPTZ`を採用した。
 
 ### tags
 
@@ -91,6 +95,8 @@ GET /api/links
     "description": "Go言語の公式ドキュメント",
     "image_url": "https://go.dev/images/og-image.png",
     "favicon_url": "https://go.dev/favicon.ico",
+    "status": "ok",
+    "checked_at": "2026-08-14T10:00:00Z",
     "created_at": "2026-08-14T09:30:00Z",
     "updated_at": "2026-08-14T09:30:00Z"
   }
@@ -126,12 +132,14 @@ POST /api/links
   "description": "This domain is for use in illustrative examples.",
   "image_url": "",
   "favicon_url": "",
+  "status": "unknown",
+  "checked_at": null,
   "created_at": "2026-08-14T09:30:00Z",
   "updated_at": "2026-08-14T09:30:00Z"
 }
 ```
 
-`url`は必須。`url`が空の場合は`400 Bad Request`を返す。`title` / `description` / `image_url` / `favicon_url`の扱いは次節「リンク登録仕様」を参照。リクエストボディに`description` / `image_url` / `favicon_url`を含めても無視される（これらはユーザー入力を受け付けない）。
+新規作成したリンクは常に`status: "unknown"` / `checked_at: null`で始まる（`POST`時に生存確認は行わない）。`url`は必須。`url`が空の場合は`400 Bad Request`を返す。`title` / `description` / `image_url` / `favicon_url`の扱いは次節「リンク登録仕様」を参照。リクエストボディに`description` / `image_url` / `favicon_url`を含めても無視される（これらはユーザー入力を受け付けない）。
 
 ### リンクの更新
 
@@ -187,6 +195,26 @@ POST /api/links/bulk
 `failed`に載るのは`url`が空文字などの明確な不正入力のみで、メタデータ取得の失敗は単体登録と同様に非致命的に扱われる（`title`等が空のまま`created`に含まれる）。
 
 サーバー内部では、各URLの処理（メタデータ取得＋DB保存）を`service.LinkService.CreateLink`にそのまま委譲し、goroutine + セマフォ（チャネル、上限`maxConcurrentFetches`＝5）で並行実行する。並行数を制限するのは、自サーバー・取得先サイト双方への負荷を抑えるため。
+
+### リンクの生存確認
+
+```text
+POST /api/links/check
+```
+
+保存されている**全リンク**を対象に、現在アクセス可能かどうかを再チェックする。リクエストボディは無し。定期実行するバックグラウンドジョブは無く、このAPIを呼ぶことでのみ実行される（手動トリガーのみ）。フロントエンドは「リンク切れをチェック」ボタンから呼び出す。
+
+出力はチェック後の全リンク一覧（`GET /api/links`と同じ形式、フィルタなし）。
+
+チェック対象のリンクが多い場合でも、`POST /api/links/bulk`と同じgoroutine + セマフォ（上限`maxConcurrentFetches`＝5）で並行にチェックする。1件のチェック失敗（タイムアウト・接続エラー等）が他のリンクのチェックを妨げない。
+
+各リンクについて`fetcher.CheckAlive(url string) (bool, error)`を呼び、以下のルールで`status`を更新する。
+
+* 2xx（リダイレクト追従後）が返れば`status = "ok"`
+* それ以外（4xx/5xx・接続失敗・タイムアウト・SSRF対策によるアクセス拒否など）はすべて`status = "broken"`として扱う。ユーザーにとって重要なのは「今アクセスできるかどうか」の一点のみであり、失敗理由の細分化はAPI仕様上行わない（サーバーログには`log.Printf`で理由を記録する）
+* `checked_at`は実行時刻（サーバー時刻）で更新する
+
+`CheckAlive`は`FetchMetadata`と同じ`http.Client`（SSRF対策・タイムアウト設定込み）を使い、GETリクエストのステータスコードのみを見る（ボディはHTMLパースせず読み捨てる）。
 
 ## リンク登録仕様（メタデータ自動取得）
 
@@ -297,9 +325,10 @@ Metadata
 └── OGP Title（og:title、現在はHTML<title>のみを使用）
 ```
 
+生存確認（`POST /api/links/check`）は手動トリガーのみで、サーバー起動中に自動で定期実行する仕組みは持たない。バックグラウンドでの定期チェック（`time.Ticker`によるスケジューリングなど）は将来検討課題として残っている。
+
 その他、README.mdのRoadmapに記載の以下も未実装である。
 
-* 保存したURLの生存確認・リンク切れの定期チェック
 * AIによる要約・自動タグ生成
 * Chrome拡張からの保存
 * より高度な全文検索（現在は`ILIKE`による部分一致のみ）
