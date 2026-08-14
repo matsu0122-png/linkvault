@@ -28,3 +28,33 @@ export async function createLink(input: CreateLinkInput): Promise<Link> {
   }
   return res.json()
 }
+
+export type UpdateLinkInput = {
+  url: string
+  title: string
+  memo: string
+}
+
+export async function updateLink(
+  id: number,
+  input: UpdateLinkInput,
+): Promise<Link> {
+  const res = await fetch(`${API_BASE_URL}/api/links/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  if (!res.ok) {
+    throw new Error(`failed to update link: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteLink(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/links/${id}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    throw new Error(`failed to delete link: ${res.status}`)
+  }
+}

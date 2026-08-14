@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { createLink, fetchLinks } from './api/links'
+import LinkItem from './LinkItem'
 import type { Link } from './types'
 import './App.css'
 
@@ -73,12 +74,18 @@ function App() {
 
       <ul>
         {links.map((link) => (
-          <li key={link.id}>
-            <a href={link.url} target="_blank" rel="noreferrer">
-              {link.title}
-            </a>
-            {link.memo && <p>{link.memo}</p>}
-          </li>
+          <LinkItem
+            key={link.id}
+            link={link}
+            onUpdated={(updated) =>
+              setLinks((prev) =>
+                prev.map((l) => (l.id === updated.id ? updated : l)),
+              )
+            }
+            onDeleted={(id) =>
+              setLinks((prev) => prev.filter((l) => l.id !== id))
+            }
+          />
         ))}
       </ul>
     </section>
