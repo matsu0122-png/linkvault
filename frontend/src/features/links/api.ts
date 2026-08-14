@@ -3,8 +3,17 @@ import type { Link } from './types'
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080'
 
-export async function fetchLinks(): Promise<Link[]> {
-  const res = await fetch(`${API_BASE_URL}/api/links`)
+export type LinkFilter = {
+  query?: string
+  tag?: string
+}
+
+export async function fetchLinks(filter: LinkFilter = {}): Promise<Link[]> {
+  const params = new URLSearchParams()
+  if (filter.query) params.set('q', filter.query)
+  if (filter.tag) params.set('tag', filter.tag)
+
+  const res = await fetch(`${API_BASE_URL}/api/links?${params}`)
   if (!res.ok) {
     throw new Error(`failed to fetch links: ${res.status}`)
   }
@@ -15,6 +24,7 @@ export type CreateLinkInput = {
   url: string
   title: string
   memo: string
+  tags: string[]
 }
 
 export async function createLink(input: CreateLinkInput): Promise<Link> {

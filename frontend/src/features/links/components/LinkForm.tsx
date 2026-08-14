@@ -1,14 +1,16 @@
 import { useState, type FormEvent } from 'react'
 import Button from '../../../components/ui/Button'
 import Input from '../../../components/ui/Input'
+import TagInput from '../../../components/ui/TagInput'
 
 export type LinkFormValues = {
   url: string
   title: string
   memo: string
+  tags: string[]
 }
 
-const emptyValues: LinkFormValues = { url: '', title: '', memo: '' }
+const emptyValues: LinkFormValues = { url: '', title: '', memo: '', tags: [] }
 
 type Props = {
   initialValues?: LinkFormValues
@@ -27,7 +29,7 @@ function LinkForm({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  function update<K extends keyof LinkFormValues>(key: K, value: string) {
+  function update<K extends keyof LinkFormValues>(key: K, value: LinkFormValues[K]) {
     setValues((prev) => ({ ...prev, [key]: value }))
   }
 
@@ -71,6 +73,11 @@ function LinkForm({
           placeholder="メモ"
           value={values.memo}
           onChange={(e) => update('memo', e.target.value)}
+        />
+        <TagInput
+          value={values.tags}
+          onChange={(tags) => update('tags', tags)}
+          className="sm:col-span-4"
         />
       </div>
       <div className="flex gap-2">

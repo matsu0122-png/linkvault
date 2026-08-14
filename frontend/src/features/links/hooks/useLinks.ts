@@ -16,12 +16,18 @@ function toMessage(err: unknown): string {
 export function useLinks() {
   const [links, setLinks] = useState<Link[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [activeTag, setActiveTag] = useState<string | null>(null)
 
   useEffect(() => {
-    fetchLinks()
-      .then(setLinks)
-      .catch((err: unknown) => setError(toMessage(err)))
-  }, [])
+    const timer = setTimeout(() => {
+      fetchLinks({ query, tag: activeTag ?? undefined })
+        .then(setLinks)
+        .catch((err: unknown) => setError(toMessage(err)))
+    }, 300)
+
+    return () => clearTimeout(timer)
+  }, [query, activeTag])
 
   const addLink = useCallback(async (input: CreateLinkInput) => {
     const created = await createLink(input)
@@ -38,5 +44,15 @@ export function useLinks() {
     setLinks((prev) => prev.filter((l) => l.id !== id))
   }, [])
 
-  return { links, error, addLink, editLink, removeLink }
+  return {
+    links,
+    error,
+    query,
+    setQuery,
+    activeTag,
+    setActiveTag,
+    addLink,
+    editLink,
+    removeLink,
+  }
 }

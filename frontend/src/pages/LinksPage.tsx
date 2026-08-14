@@ -1,11 +1,22 @@
 import { useState } from 'react'
 import Button from '../components/ui/Button'
+import Input from '../components/ui/Input'
 import LinkForm from '../features/links/components/LinkForm'
 import LinkList from '../features/links/components/LinkList'
 import { useLinks } from '../features/links/hooks/useLinks'
 
 function LinksPage() {
-  const { links, error, addLink, editLink, removeLink } = useLinks()
+  const {
+    links,
+    error,
+    query,
+    setQuery,
+    activeTag,
+    setActiveTag,
+    addLink,
+    editLink,
+    removeLink,
+  } = useLinks()
   const [adding, setAdding] = useState(false)
 
   return (
@@ -20,6 +31,25 @@ function LinksPage() {
           </Button>
         )}
       </header>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          type="search"
+          placeholder="検索"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="flex-1"
+        />
+        {activeTag && (
+          <button
+            type="button"
+            onClick={() => setActiveTag(null)}
+            className="flex items-center gap-1 rounded-full bg-teal-600 px-3 py-1 text-xs font-medium text-white hover:bg-teal-700"
+          >
+            #{activeTag} ✕
+          </button>
+        )}
+      </div>
 
       {adding && (
         <LinkForm
@@ -40,7 +70,12 @@ function LinksPage() {
         </p>
       )}
 
-      <LinkList links={links} onEdit={editLink} onDelete={removeLink} />
+      <LinkList
+        links={links}
+        onEdit={editLink}
+        onDelete={removeLink}
+        onTagClick={setActiveTag}
+      />
     </div>
   )
 }
