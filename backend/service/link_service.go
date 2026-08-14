@@ -6,16 +6,22 @@ import (
 	"time"
 
 	"github.com/matsu0122-png/linkvault/backend/model"
-	"github.com/matsu0122-png/linkvault/backend/repository"
 )
 
 var ErrNotFound = errors.New("link not found")
 
-type LinkService struct {
-	repo *repository.LinkRepository
+type linkRepository interface {
+	Create(link model.Link) (model.Link, error)
+	List() ([]model.Link, error)
+	Update(link model.Link) (model.Link, error)
+	Delete(id int) error
 }
 
-func NewLinkService(repo *repository.LinkRepository) *LinkService {
+type LinkService struct {
+	repo linkRepository
+}
+
+func NewLinkService(repo linkRepository) *LinkService {
 	return &LinkService{repo: repo}
 }
 
