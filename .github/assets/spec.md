@@ -151,6 +151,43 @@ DELETE /api/links/:id
 
 指定されたIDのリンクを削除する。成功時は`204 No Content`。対象が存在しない場合は`404 Not Found`。`links`の削除に伴い、`link_tags`の該当行はCASCADEで自動削除される（`tags`自体は他のリンクから参照されている可能性があるため削除しない）。
 
+### リンクの一括登録
+
+```text
+POST /api/links/bulk
+```
+
+複数のURLをまとめて登録する。`title`/`memo`は指定できず、常にメタデータ自動取得のみで決まる（単体登録の`title`空文字時と同じ扱い）。`tags`は全URLに共通で適用される。
+
+入力例：
+
+```json
+{
+  "urls": ["https://go.dev", "https://react.dev", ""],
+  "tags": ["reading-list"]
+}
+```
+
+出力例：
+
+```json
+{
+  "created": [
+    { "id": 10, "url": "https://go.dev", "title": "The Go Programming Language", "...": "..." },
+    { "id": 11, "url": "https://react.dev", "title": "React", "...": "..." }
+  ],
+  "failed": [
+    { "url": "", "error": "url is required" }
+  ]
+}
+```
+
+`urls`が空、または`MaxBulkURLs`（50件）を超える場合は`400 Bad Request`を返す。それ以外は常に`200 OK`で、`created`と`failed`の内訳をレスポンスボディに含める（1件の失敗が他のURLの登録を妨げない）。`created` / `failed`はいずれも`urls`の入力順を保持する。
+
+`failed`に載るのは`url`が空文字などの明確な不正入力のみで、メタデータ取得の失敗は単体登録と同様に非致命的に扱われる（`title`等が空のまま`created`に含まれる）。
+
+サーバー内部では、各URLの処理（メタデータ取得＋DB保存）を`service.LinkService.CreateLink`にそのまま委譲し、goroutine + セマフォ（チャネル、上限`maxConcurrentFetches`＝5）で並行実行する。並行数を制限するのは、自サーバー・取得先サイト双方への負荷を抑えるため。
+
 ## リンク登録仕様（メタデータ自動取得）
 
 `POST /api/links`のみに適用される仕様。
@@ -263,7 +300,6 @@ Metadata
 その他、README.mdのRoadmapに記載の以下も未実装である。
 
 * 保存したURLの生存確認・リンク切れの定期チェック
-* 複数URLの一括登録
 * AIによる要約・自動タグ生成
 * Chrome拡張からの保存
 * より高度な全文検索（現在は`ILIKE`による部分一致のみ）
