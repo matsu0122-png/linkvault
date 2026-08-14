@@ -31,22 +31,32 @@ func (m *mockLinkRepository) Delete(id int) error {
 	return m.deleteFn(id)
 }
 
-type mockTitleFetcher struct {
-	fetchFn func(url string) (string, error)
+type mockMetadataFetcher struct {
+	fetchFn func(url string) (model.Metadata, error)
 }
 
-func (m *mockTitleFetcher) FetchTitle(url string) (string, error) {
+func (m *mockMetadataFetcher) FetchMetadata(url string) (model.Metadata, error) {
 	return m.fetchFn(url)
 }
 
-// unusedFetcher fails the test if FetchTitle is called, for cases where a
-// title is already supplied and fetching should be skipped entirely.
-func unusedFetcher(t *testing.T) *mockTitleFetcher {
+// unusedFetcher fails the test if FetchMetadata is called, for methods that
+// never fetch (List/Update/Delete) or that return before reaching the fetch.
+func unusedFetcher(t *testing.T) *mockMetadataFetcher {
 	t.Helper()
-	return &mockTitleFetcher{
-		fetchFn: func(url string) (string, error) {
+	return &mockMetadataFetcher{
+		fetchFn: func(url string) (model.Metadata, error) {
 			t.Fatal("fetcher should not be called")
-			return "", nil
+			return model.Metadata{}, nil
+		},
+	}
+}
+
+// noopFetcher succeeds with no metadata, for CreateLink tests that don't
+// care about the fetch result.
+func noopFetcher() *mockMetadataFetcher {
+	return &mockMetadataFetcher{
+		fetchFn: func(url string) (model.Metadata, error) {
+			return model.Metadata{}, nil
 		},
 	}
 }
@@ -59,7 +69,7 @@ func TestCreateLink(t *testing.T) {
 				return link, nil
 			},
 		}
-		s := NewLinkService(repo, unusedFetcher(t))
+		s := NewLinkService(repo, noopFetcher())
 
 		got, err := s.CreateLink("https://example.com", "Example", "memo", nil)
 		if err != nil {
@@ -94,7 +104,7 @@ func TestCreateLink(t *testing.T) {
 				return link, nil
 			},
 		}
-		s := NewLinkService(repo, unusedFetcher(t))
+		s := NewLinkService(repo, noopFetcher())
 
 		_, err := s.CreateLink("https://example.com", "Example", "memo", []string{" Go ", "web", "Go", "  "})
 		if err != nil {
@@ -114,9 +124,9 @@ func TestCreateLink(t *testing.T) {
 				return link, nil
 			},
 		}
-		fetcher := &mockTitleFetcher{
-			fetchFn: func(url string) (string, error) {
-				return "Fetched Title", nil
+		fetcher := &mockMetadataFetcher{
+			fetchFn: func(url string) (model.Metadata, error) {
+				return model.Metadata{Title: "Fetched Title"}, nil
 			},
 		}
 		s := NewLinkService(repo, fetcher)
@@ -137,9 +147,9 @@ func TestCreateLink(t *testing.T) {
 				return link, nil
 			},
 		}
-		fetcher := &mockTitleFetcher{
-			fetchFn: func(url string) (string, error) {
-				return "", errors.New("timeout")
+		fetcher := &mockMetadataFetcher{
+			fetchFn: func(url string) (model.Metadata, error) {
+				return model.Metadata{}, errors.New("timeout")
 			},
 		}
 		s := NewLinkService(repo, fetcher)
@@ -150,6 +160,60 @@ func TestCreateLink(t *testing.T) {
 		}
 		if got.Title != "" {
 			t.Errorf("expected empty title, got %q", got.Title)
+		}
+	})
+
+	t.Run("titleが指定されていればfetcherのtitleより優先される", func(t *testing.T) {
+		repo := &mockLinkRepository{
+			createFn: func(link model.Link) (model.Link, error) {
+				link.ID = 1
+				return link, nil
+			},
+		}
+		fetcher := &mockMetadataFetcher{
+			fetchFn: func(url string) (model.Metadata, error) {
+				return model.Metadata{Title: "Fetched Title"}, nil
+			},
+		}
+		s := NewLinkService(repo, fetcher)
+
+		got, err := s.CreateLink("https://example.com", "My Title", "memo", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Title != "My Title" {
+			t.Errorf("expected user-supplied title to win, got %q", got.Title)
+		}
+	})
+
+	t.Run("titleを指定していてもdescription/image/faviconはfetch結果を使う", func(t *testing.T) {
+		repo := &mockLinkRepository{
+			createFn: func(link model.Link) (model.Link, error) {
+				link.ID = 1
+				return link, nil
+			},
+		}
+		fetcher := &mockMetadataFetcher{
+			fetchFn: func(url string) (model.Metadata, error) {
+				return model.Metadata{
+					Title:       "ignored",
+					Description: "desc",
+					ImageURL:    "https://example.com/og.png",
+					FaviconURL:  "https://example.com/favicon.png",
+				}, nil
+			},
+		}
+		s := NewLinkService(repo, fetcher)
+
+		got, err := s.CreateLink("https://example.com", "My Title", "memo", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Title != "My Title" {
+			t.Errorf("Title = %q", got.Title)
+		}
+		if got.Description != "desc" || got.ImageURL != "https://example.com/og.png" || got.FaviconURL != "https://example.com/favicon.png" {
+			t.Errorf("unexpected metadata: %+v", got)
 		}
 	})
 }

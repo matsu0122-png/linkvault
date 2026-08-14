@@ -19,18 +19,19 @@ type linkRepository interface {
 	Delete(id int) error
 }
 
-// titleFetcher fetches the <title> of a web page. Failures are non-fatal:
-// callers fall back to an empty title rather than rejecting the request.
-type titleFetcher interface {
-	FetchTitle(url string) (string, error)
+// metadataFetcher fetches page metadata (title, description, OGP image,
+// favicon) for a URL. Failures are non-fatal: callers fall back to whatever
+// fields the caller already has rather than rejecting the request.
+type metadataFetcher interface {
+	FetchMetadata(url string) (model.Metadata, error)
 }
 
 type LinkService struct {
 	repo    linkRepository
-	fetcher titleFetcher
+	fetcher metadataFetcher
 }
 
-func NewLinkService(repo linkRepository, fetcher titleFetcher) *LinkService {
+func NewLinkService(repo linkRepository, fetcher metadataFetcher) *LinkService {
 	return &LinkService{repo: repo, fetcher: fetcher}
 }
 
@@ -39,23 +40,30 @@ func (s *LinkService) CreateLink(url, title, memo string, tags []string) (model.
 		return model.Link{}, errors.New("url is required")
 	}
 
-	if title == "" {
-		if fetched, err := s.fetcher.FetchTitle(url); err != nil {
-			log.Printf("fetch title for %s: %v", url, err)
-		} else {
-			title = fetched
-		}
+	link := model.Link{
+		URL:  url,
+		Memo: memo,
+		Tags: normalizeTags(tags),
+	}
+
+	meta, err := s.fetcher.FetchMetadata(url)
+	if err != nil {
+		log.Printf("fetch metadata for %s: %v", url, err)
+	} else {
+		link.Description = meta.Description
+		link.ImageURL = meta.ImageURL
+		link.FaviconURL = meta.FaviconURL
+	}
+
+	if title != "" {
+		link.Title = title
+	} else {
+		link.Title = meta.Title
 	}
 
 	now := time.Now()
-	link := model.Link{
-		URL:       url,
-		Title:     title,
-		Memo:      memo,
-		Tags:      normalizeTags(tags),
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
+	link.CreatedAt = now
+	link.UpdatedAt = now
 
 	return s.repo.Create(link)
 }

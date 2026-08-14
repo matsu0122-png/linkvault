@@ -34,17 +34,23 @@ func TestLinkRepositoryCreate(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 
 	got, err := repo.Create(model.Link{
-		URL:       "https://example.com",
-		Title:     "Example",
-		Memo:      "memo",
-		CreatedAt: now,
-		UpdatedAt: now,
+		URL:         "https://example.com",
+		Title:       "Example",
+		Memo:        "memo",
+		Description: "an example page",
+		ImageURL:    "https://example.com/og.png",
+		FaviconURL:  "https://example.com/favicon.png",
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got.ID == 0 {
 		t.Errorf("expected ID to be assigned, got %d", got.ID)
+	}
+	if got.Description != "an example page" || got.ImageURL != "https://example.com/og.png" || got.FaviconURL != "https://example.com/favicon.png" {
+		t.Errorf("unexpected metadata: %+v", got)
 	}
 }
 
@@ -103,7 +109,15 @@ func TestLinkRepositoryUpdate(t *testing.T) {
 	repo := setupTestRepo(t)
 	now := time.Now().Truncate(time.Second)
 
-	created, err := repo.Create(model.Link{URL: "https://example.com", Title: "Example", CreatedAt: now, UpdatedAt: now})
+	created, err := repo.Create(model.Link{
+		URL:         "https://example.com",
+		Title:       "Example",
+		Description: "an example page",
+		ImageURL:    "https://example.com/og.png",
+		FaviconURL:  "https://example.com/favicon.png",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
 	if err != nil {
 		t.Fatalf("setup: failed to create link: %v", err)
 	}
@@ -121,6 +135,22 @@ func TestLinkRepositoryUpdate(t *testing.T) {
 		}
 		if updated.URL != "https://updated.example.com" || updated.Title != "Updated" {
 			t.Errorf("unexpected link: %+v", updated)
+		}
+	})
+
+	t.Run("description/image/faviconはUpdateで上書きされず保持される", func(t *testing.T) {
+		updated, err := repo.Update(model.Link{
+			ID:        created.ID,
+			URL:       created.URL,
+			Title:     "Updated Again",
+			Memo:      "another memo",
+			UpdatedAt: time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if updated.Description != "an example page" || updated.ImageURL != "https://example.com/og.png" || updated.FaviconURL != "https://example.com/favicon.png" {
+			t.Errorf("expected metadata to be preserved, got %+v", updated)
 		}
 	})
 

@@ -1,9 +1,9 @@
-// Package fetcher retrieves the <title> of a web page so links can be saved
-// without the user having to type a title by hand.
+// Package fetcher retrieves page metadata (title, description, OGP image,
+// favicon) for a URL so links can be saved without the user typing them by
+// hand.
 package fetcher
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,16 +14,16 @@ import (
 	"time"
 
 	"golang.org/x/net/html"
+
+	"github.com/matsu0122-png/linkvault/backend/model"
 )
 
 const (
 	requestTimeout = 5 * time.Second
 	dialTimeout    = 3 * time.Second
 	maxRedirects   = 3
-	maxBodyBytes   = 512 * 1024 // 512KB, well beyond where <title> normally appears
+	maxBodyBytes   = 512 * 1024 // 512KB, well beyond where <head> normally ends
 )
-
-var errTitleNotFound = errors.New("title not found")
 
 type Fetcher struct {
 	client *http.Client
@@ -51,60 +51,145 @@ func New() *Fetcher {
 	}
 }
 
-// FetchTitle fetches rawURL and returns the text content of its <title> element.
-func (f *Fetcher) FetchTitle(rawURL string) (string, error) {
+// FetchMetadata fetches rawURL and extracts title, description, OGP image,
+// and favicon from the response HTML. Fields that can't be found are left
+// as empty strings rather than causing an error.
+func (f *Fetcher) FetchMetadata(rawURL string) (model.Metadata, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return "", fmt.Errorf("parse url: %w", err)
+		return model.Metadata{}, fmt.Errorf("parse url: %w", err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("unsupported scheme: %s", parsed.Scheme)
+		return model.Metadata{}, fmt.Errorf("unsupported scheme: %s", parsed.Scheme)
 	}
 
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("build request: %w", err)
+		return model.Metadata{}, fmt.Errorf("build request: %w", err)
 	}
 
 	resp, err := f.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetch: %w", err)
+		return model.Metadata{}, fmt.Errorf("fetch: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("unexpected status: %d", resp.StatusCode)
+		return model.Metadata{}, fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 
-	return parseTitle(io.LimitReader(resp.Body, maxBodyBytes))
+	return parseMetadata(io.LimitReader(resp.Body, maxBodyBytes), resp.Request.URL), nil
 }
 
-// parseTitle scans HTML and returns the text of the first <title> element.
-func parseTitle(r io.Reader) (string, error) {
+// parseMetadata scans HTML and extracts title, description, OGP image, and
+// favicon. It stops once </head> is seen, since these elements only ever
+// appear there. base is used to resolve relative image/favicon URLs.
+func parseMetadata(r io.Reader, base *url.URL) model.Metadata {
 	tokenizer := html.NewTokenizer(r)
+
+	var meta model.Metadata
+	var ogDescription string
 	inTitle := false
 
 	for {
-		switch tokenizer.Next() {
-		case html.ErrorToken:
-			return "", errTitleNotFound
-		case html.StartTagToken:
-			name, _ := tokenizer.TagName()
-			inTitle = string(name) == "title"
+		tt := tokenizer.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+
+		switch tt {
+		case html.StartTagToken, html.SelfClosingTagToken:
+			tok := tokenizer.Token()
+			switch tok.Data {
+			case "title":
+				inTitle = tt == html.StartTagToken
+			case "meta":
+				name, property, content := metaAttrs(tok)
+				switch {
+				case property == "og:description":
+					ogDescription = content
+				case name == "description" && meta.Description == "":
+					meta.Description = content
+				case property == "og:image" && meta.ImageURL == "":
+					meta.ImageURL = resolveURL(base, content)
+				}
+			case "link":
+				rel, href := linkAttrs(tok)
+				if (rel == "icon" || rel == "shortcut icon") && meta.FaviconURL == "" {
+					meta.FaviconURL = resolveURL(base, href)
+				}
+			}
 		case html.EndTagToken:
 			name, _ := tokenizer.TagName()
-			if string(name) == "title" {
+			switch string(name) {
+			case "title":
 				inTitle = false
+			case "head":
+				if ogDescription != "" {
+					meta.Description = ogDescription
+				}
+				return meta
 			}
 		case html.TextToken:
-			if inTitle {
-				title := strings.TrimSpace(string(tokenizer.Text()))
-				if title != "" {
-					return title, nil
+			if inTitle && meta.Title == "" {
+				if text := strings.TrimSpace(string(tokenizer.Text())); text != "" {
+					meta.Title = text
 				}
 			}
 		}
 	}
+
+	if ogDescription != "" {
+		meta.Description = ogDescription
+	}
+
+	return meta
+}
+
+func metaAttrs(tok html.Token) (name, property, content string) {
+	for _, a := range tok.Attr {
+		switch a.Key {
+		case "name":
+			name = a.Val
+		case "property":
+			property = a.Val
+		case "content":
+			content = a.Val
+		}
+	}
+	return name, property, content
+}
+
+func linkAttrs(tok html.Token) (rel, href string) {
+	for _, a := range tok.Attr {
+		switch a.Key {
+		case "rel":
+			rel = a.Val
+		case "href":
+			href = a.Val
+		}
+	}
+	return rel, href
+}
+
+// resolveURL resolves ref (possibly relative) against base and only returns
+// it when the result is an http(s) URL.
+func resolveURL(base *url.URL, ref string) string {
+	if ref == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(ref)
+	if err != nil {
+		return ""
+	}
+
+	resolved := base.ResolveReference(parsed)
+	if resolved.Scheme != "http" && resolved.Scheme != "https" {
+		return ""
+	}
+
+	return resolved.String()
 }
 
 // blockUnsafeAddresses is a net.Dialer.Control hook that runs right before a

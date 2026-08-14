@@ -23,12 +23,16 @@ func (r *LinkRepository) Create(link model.Link) (model.Link, error) {
 	defer tx.Rollback()
 
 	query := `
-		INSERT INTO links (url, title, memo, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO links (url, title, memo, description, image_url, favicon_url, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id
 	`
 
-	if err := tx.QueryRow(query, link.URL, link.Title, link.Memo, link.CreatedAt, link.UpdatedAt).Scan(&link.ID); err != nil {
+	if err := tx.QueryRow(
+		query,
+		link.URL, link.Title, link.Memo, link.Description, link.ImageURL, link.FaviconURL,
+		link.CreatedAt, link.UpdatedAt,
+	).Scan(&link.ID); err != nil {
 		return model.Link{}, err
 	}
 
@@ -111,7 +115,7 @@ func (r *LinkRepository) Delete(id int) error {
 // and/or an exact tag name. Passing "" for either skips that filter.
 func (r *LinkRepository) List(query, tag string) ([]model.Link, error) {
 	sqlQuery := `
-		SELECT l.id, l.url, l.title, l.memo, l.created_at, l.updated_at,
+		SELECT l.id, l.url, l.title, l.memo, l.description, l.image_url, l.favicon_url, l.created_at, l.updated_at,
 		       COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}')
 		FROM links l
 		LEFT JOIN link_tags lt ON lt.link_id = l.id
@@ -137,7 +141,11 @@ func (r *LinkRepository) List(query, tag string) ([]model.Link, error) {
 	for rows.Next() {
 		var link model.Link
 
-		err := rows.Scan(&link.ID, &link.URL, &link.Title, &link.Memo, &link.CreatedAt, &link.UpdatedAt, pq.Array(&link.Tags))
+		err := rows.Scan(
+			&link.ID, &link.URL, &link.Title, &link.Memo,
+			&link.Description, &link.ImageURL, &link.FaviconURL,
+			&link.CreatedAt, &link.UpdatedAt, pq.Array(&link.Tags),
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -159,14 +167,19 @@ func (r *LinkRepository) Update(link model.Link) (model.Link, error) {
 	}
 	defer tx.Rollback()
 
+	// description/image_url/favicon_url are intentionally left untouched here:
+	// there's no way to edit them from the UI, and Update never re-fetches, so
+	// overwriting them would wipe out whatever Create originally captured.
 	query := `
 		UPDATE links
 		SET url = $1, title = $2, memo = $3, updated_at = $4
 		WHERE id = $5
-		RETURNING created_at
+		RETURNING created_at, description, image_url, favicon_url
 	`
 
-	if err := tx.QueryRow(query, link.URL, link.Title, link.Memo, link.UpdatedAt, link.ID).Scan(&link.CreatedAt); err != nil {
+	if err := tx.QueryRow(query, link.URL, link.Title, link.Memo, link.UpdatedAt, link.ID).Scan(
+		&link.CreatedAt, &link.Description, &link.ImageURL, &link.FaviconURL,
+	); err != nil {
 		return model.Link{}, err
 	}
 
