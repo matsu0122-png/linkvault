@@ -18,6 +18,15 @@ function hostname(url: string): string {
   }
 }
 
+function statusTitle(link: Link): string {
+  const checkedAt = link.checked_at
+    ? new Date(link.checked_at).toLocaleString()
+    : ''
+  return link.status === 'ok'
+    ? `アクセス可能（最終確認: ${checkedAt}）`
+    : `リンク切れの可能性（最終確認: ${checkedAt}）`
+}
+
 function LinkRow({ link, onEdit, onDelete, onTagClick }: Props) {
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -78,8 +87,16 @@ function LinkRow({ link, onEdit, onDelete, onTagClick }: Props) {
             )}
             {link.title || link.url}
           </a>
-          <span className="font-mono text-xs text-stone-400">
+          <span className="inline-flex items-center gap-1 font-mono text-xs text-stone-400">
             {hostname(link.url)}
+            {link.status !== 'unknown' && (
+              <span
+                title={statusTitle(link)}
+                className={`inline-block h-1.5 w-1.5 rounded-full ${
+                  link.status === 'ok' ? 'bg-emerald-500' : 'bg-rose-400'
+                }`}
+              />
+            )}
           </span>
         </div>
         {(link.memo || link.description) && (

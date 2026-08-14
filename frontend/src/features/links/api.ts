@@ -85,6 +85,16 @@ export async function bulkCreateLinks(
   return res.json()
 }
 
+export async function checkLinks(): Promise<Link[]> {
+  const res = await fetch(`${API_BASE_URL}/api/links/check`, {
+    method: 'POST',
+  })
+  if (!res.ok) {
+    throw new Error(`failed to check links: ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function deleteLink(id: number): Promise<void> {
   const res = await fetch(`${API_BASE_URL}/api/links/${id}`, {
     method: 'DELETE',

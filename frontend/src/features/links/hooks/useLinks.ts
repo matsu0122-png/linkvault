@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   bulkCreateLinks,
+  checkLinks as checkLinksRequest,
   createLink,
   deleteLink,
   fetchLinks,
@@ -21,6 +22,7 @@ export function useLinks() {
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [activeTag, setActiveTag] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -46,6 +48,20 @@ export function useLinks() {
     [],
   )
 
+  const checkLinks = useCallback(async () => {
+    setChecking(true)
+    try {
+      await checkLinksRequest()
+      // checkLinksRequest updates every link regardless of the current
+      // filter, so refetch through the filtered endpoint to stay consistent
+      // with what's on screen.
+      const refreshed = await fetchLinks({ query, tag: activeTag ?? undefined })
+      setLinks(refreshed)
+    } finally {
+      setChecking(false)
+    }
+  }, [query, activeTag])
+
   const editLink = useCallback(async (id: number, input: UpdateLinkInput) => {
     const updated = await updateLink(id, input)
     setLinks((prev) => prev.map((l) => (l.id === updated.id ? updated : l)))
@@ -65,6 +81,8 @@ export function useLinks() {
     setActiveTag,
     addLink,
     bulkAddLinks,
+    checking,
+    checkLinks,
     editLink,
     removeLink,
   }

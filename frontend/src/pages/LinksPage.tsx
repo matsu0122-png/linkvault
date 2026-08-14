@@ -18,6 +18,8 @@ function LinksPage() {
     setActiveTag,
     addLink,
     bulkAddLinks,
+    checking,
+    checkLinks,
     editLink,
     removeLink,
   } = useLinks()
@@ -62,6 +64,14 @@ function LinksPage() {
             #{activeTag} ✕
           </button>
         )}
+        <button
+          type="button"
+          onClick={() => checkLinks()}
+          disabled={checking}
+          className="shrink-0 text-xs text-stone-500 hover:text-teal-600 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {checking ? 'チェック中...' : 'リンク切れをチェック'}
+        </button>
       </div>
 
       {mode === 'single' && (
