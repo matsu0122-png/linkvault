@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  bulkCreateLinks,
   createLink,
   deleteLink,
   fetchLinks,
   updateLink,
+  type BulkCreateInput,
+  type BulkCreateResult,
   type CreateLinkInput,
   type UpdateLinkInput,
 } from '../api'
@@ -34,6 +37,15 @@ export function useLinks() {
     setLinks((prev) => [...prev, created])
   }, [])
 
+  const bulkAddLinks = useCallback(
+    async (input: BulkCreateInput): Promise<BulkCreateResult> => {
+      const result = await bulkCreateLinks(input)
+      setLinks((prev) => [...prev, ...result.created])
+      return result
+    },
+    [],
+  )
+
   const editLink = useCallback(async (id: number, input: UpdateLinkInput) => {
     const updated = await updateLink(id, input)
     setLinks((prev) => prev.map((l) => (l.id === updated.id ? updated : l)))
@@ -52,6 +64,7 @@ export function useLinks() {
     activeTag,
     setActiveTag,
     addLink,
+    bulkAddLinks,
     editLink,
     removeLink,
   }

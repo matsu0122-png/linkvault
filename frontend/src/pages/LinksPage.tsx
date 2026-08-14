@@ -1,9 +1,12 @@
 import { useState } from 'react'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
+import BulkLinkForm from '../features/links/components/BulkLinkForm'
 import LinkForm from '../features/links/components/LinkForm'
 import LinkList from '../features/links/components/LinkList'
 import { useLinks } from '../features/links/hooks/useLinks'
+
+type Mode = 'none' | 'single' | 'bulk'
 
 function LinksPage() {
   const {
@@ -14,10 +17,11 @@ function LinksPage() {
     activeTag,
     setActiveTag,
     addLink,
+    bulkAddLinks,
     editLink,
     removeLink,
   } = useLinks()
-  const [adding, setAdding] = useState(false)
+  const [mode, setMode] = useState<Mode>('none')
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-16">
@@ -25,10 +29,19 @@ function LinksPage() {
         <h1 className="font-display text-2xl font-medium text-stone-800">
           LinkVault
         </h1>
-        {!adding && (
-          <Button type="button" size="sm" onClick={() => setAdding(true)}>
-            + 新しいリンク
-          </Button>
+        {mode === 'none' && (
+          <div className="flex items-center gap-3">
+            <Button type="button" size="sm" onClick={() => setMode('single')}>
+              + 新しいリンク
+            </Button>
+            <button
+              type="button"
+              onClick={() => setMode('bulk')}
+              className="text-xs text-stone-500 hover:text-teal-600 hover:underline"
+            >
+              まとめて登録
+            </button>
+          </div>
         )}
       </header>
 
@@ -51,14 +64,18 @@ function LinksPage() {
         )}
       </div>
 
-      {adding && (
+      {mode === 'single' && (
         <LinkForm
           submitLabel="追加"
           onSubmit={async (values) => {
             await addLink(values)
           }}
-          onCancel={() => setAdding(false)}
+          onCancel={() => setMode('none')}
         />
+      )}
+
+      {mode === 'bulk' && (
+        <BulkLinkForm onSubmit={bulkAddLinks} onCancel={() => setMode('none')} />
       )}
 
       {error && (

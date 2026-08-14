@@ -56,6 +56,35 @@ export async function updateLink(
   return res.json()
 }
 
+export type BulkCreateInput = {
+  urls: string[]
+  tags: string[]
+}
+
+export type BulkCreateFailure = {
+  url: string
+  error: string
+}
+
+export type BulkCreateResult = {
+  created: Link[]
+  failed: BulkCreateFailure[]
+}
+
+export async function bulkCreateLinks(
+  input: BulkCreateInput,
+): Promise<BulkCreateResult> {
+  const res = await fetch(`${API_BASE_URL}/api/links/bulk`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  if (!res.ok) {
+    throw new Error(`failed to bulk create links: ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function deleteLink(id: number): Promise<void> {
   const res = await fetch(`${API_BASE_URL}/api/links/${id}`, {
     method: 'DELETE',
