@@ -1,4 +1,4 @@
-import type { Link } from '../types'
+import type { Link } from './types'
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080'
@@ -29,11 +29,7 @@ export async function createLink(input: CreateLinkInput): Promise<Link> {
   return res.json()
 }
 
-export type UpdateLinkInput = {
-  url: string
-  title: string
-  memo: string
-}
+export type UpdateLinkInput = CreateLinkInput
 
 export async function updateLink(
   id: number,
