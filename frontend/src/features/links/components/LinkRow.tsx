@@ -64,15 +64,29 @@ function LinkRow({ link, onEdit, onDelete, onTagClick }: Props) {
             href={link.url}
             target="_blank"
             rel="noreferrer"
-            className="font-medium text-stone-800 hover:text-teal-600 hover:underline"
+            className="inline-flex items-baseline gap-1.5 font-medium text-stone-800 hover:text-teal-600 hover:underline"
           >
+            {link.favicon_url && (
+              <img
+                src={link.favicon_url}
+                alt=""
+                className="h-3.5 w-3.5 shrink-0 translate-y-0.5 rounded-sm"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none'
+                }}
+              />
+            )}
             {link.title || link.url}
           </a>
           <span className="font-mono text-xs text-stone-400">
             {hostname(link.url)}
           </span>
         </div>
-        {link.memo && <p className="mt-0.5 text-sm text-stone-500">{link.memo}</p>}
+        {(link.memo || link.description) && (
+          <p className="mt-0.5 text-sm text-stone-500">
+            {link.memo || link.description}
+          </p>
+        )}
         {link.tags.length > 0 && (
           <div className="mt-1.5 flex flex-wrap gap-1">
             {link.tags.map((tag) => (
