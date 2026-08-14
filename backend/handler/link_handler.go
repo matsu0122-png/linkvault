@@ -19,13 +19,17 @@ func NewLinkHandler(service *service.LinkService) *LinkHandler {
 }
 
 type linkRequest struct {
-	URL   string `json:"url"`
-	Title string `json:"title"`
-	Memo  string `json:"memo"`
+	URL   string   `json:"url"`
+	Title string   `json:"title"`
+	Memo  string   `json:"memo"`
+	Tags  []string `json:"tags"`
 }
 
 func (h *LinkHandler) ListLinks(w http.ResponseWriter, r *http.Request) {
-	links, err := h.service.ListLinks()
+	query := r.URL.Query().Get("q")
+	tag := r.URL.Query().Get("tag")
+
+	links, err := h.service.ListLinks(query, tag)
 	if err != nil {
 		http.Error(w, "Failed to fetch links", http.StatusInternalServerError)
 		return
@@ -41,7 +45,7 @@ func (h *LinkHandler) CreateLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	link, err := h.service.CreateLink(req.URL, req.Title, req.Memo)
+	link, err := h.service.CreateLink(req.URL, req.Title, req.Memo, req.Tags)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -63,7 +67,7 @@ func (h *LinkHandler) UpdateLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	link, err := h.service.UpdateLink(id, req.URL, req.Title, req.Memo)
+	link, err := h.service.UpdateLink(id, req.URL, req.Title, req.Memo, req.Tags)
 	if errors.Is(err, service.ErrNotFound) {
 		http.Error(w, "Link not found", http.StatusNotFound)
 		return

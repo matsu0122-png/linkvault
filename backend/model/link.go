@@ -7,6 +7,7 @@ type Link struct {
 	URL       string    `json:"url"`
 	Title     string    `json:"title"`
 	Memo      string    `json:"memo"`
+	Tags      []string  `json:"tags"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

@@ -77,7 +77,9 @@ jobs:
           cache-dependency-path: backend/go.sum
 
       - name: Apply migrations
-        run: psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -f migrations/0001_create_links_table.sql
+        run: |
+          psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -f migrations/0001_create_links_table.sql
+          psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -f migrations/0002_create_tags_tables.sql
         env:
           PGPASSWORD: postgres
 

@@ -22,7 +22,7 @@ func setupTestRepo(t *testing.T) *LinkRepository {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	if _, err := db.Exec("TRUNCATE TABLE links RESTART IDENTITY"); err != nil {
+	if _, err := db.Exec("TRUNCATE TABLE links, tags RESTART IDENTITY CASCADE"); err != nil {
 		t.Fatalf("failed to truncate links table: %v", err)
 	}
 
@@ -58,13 +58,45 @@ func TestLinkRepositoryList(t *testing.T) {
 		}
 	}
 
-	links, err := repo.List()
+	links, err := repo.List("", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(links) != 2 {
 		t.Errorf("expected 2 links, got %d", len(links))
 	}
+}
+
+func TestLinkRepositoryListFilter(t *testing.T) {
+	repo := setupTestRepo(t)
+	now := time.Now().Truncate(time.Second)
+
+	if _, err := repo.Create(model.Link{URL: "https://go.dev", Title: "Go Concurrency", Tags: []string{"Go", "backend"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("setup: failed to create link: %v", err)
+	}
+	if _, err := repo.Create(model.Link{URL: "https://react.dev", Title: "React Docs", Tags: []string{"frontend"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("setup: failed to create link: %v", err)
+	}
+
+	t.Run("キーワードでtitleを部分一致検索できる", func(t *testing.T) {
+		links, err := repo.List("concurrency", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(links) != 1 || links[0].Title != "Go Concurrency" {
+			t.Errorf("unexpected links: %+v", links)
+		}
+	})
+
+	t.Run("タグで絞り込める", func(t *testing.T) {
+		links, err := repo.List("", "frontend")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(links) != 1 || links[0].Title != "React Docs" {
+			t.Errorf("unexpected links: %+v", links)
+		}
+	})
 }
 
 func TestLinkRepositoryUpdate(t *testing.T) {
@@ -98,6 +130,30 @@ func TestLinkRepositoryUpdate(t *testing.T) {
 			t.Errorf("expected sql.ErrNoRows, got %v", err)
 		}
 	})
+
+	t.Run("タグを入れ替えられる", func(t *testing.T) {
+		if _, err := repo.Update(model.Link{ID: created.ID, URL: created.URL, Title: created.Title, Tags: []string{"Go", "web"}, UpdatedAt: time.Now()}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		updated, err := repo.Update(model.Link{ID: created.ID, URL: created.URL, Title: created.Title, Tags: []string{"backend"}, UpdatedAt: time.Now()})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(updated.Tags) != 1 || updated.Tags[0] != "backend" {
+			t.Errorf("expected tags to be replaced with [backend], got %+v", updated.Tags)
+		}
+
+		links, err := repo.List("", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for _, l := range links {
+			if l.ID == created.ID && (len(l.Tags) != 1 || l.Tags[0] != "backend") {
+				t.Errorf("expected stored tags to be [backend], got %+v", l.Tags)
+			}
+		}
+	})
 }
 
 func TestLinkRepositoryDelete(t *testing.T) {
@@ -114,7 +170,7 @@ func TestLinkRepositoryDelete(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		links, err := repo.List()
+		links, err := repo.List("", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
