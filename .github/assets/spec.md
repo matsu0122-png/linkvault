@@ -19,7 +19,7 @@ config/        環境変数の読み込み
 database/      DB接続
 ```
 
-`service`パッケージは呼び出し先（`linkRepository`・`titleFetcher`）のインターフェースを自パッケージ内で定義し、`repository`・`fetcher`パッケージの具象型を受け取る（Goの「利用側でインターフェースを定義する」慣習に従う）。
+`service`パッケージは呼び出し先（`linkRepository`・`metadataFetcher`）のインターフェースを自パッケージ内で定義し、`repository`・`fetcher`パッケージの具象型を受け取る（Goの「利用側でインターフェースを定義する」慣習に従う）。
 
 ## データ設計
 
@@ -29,12 +29,17 @@ PostgreSQLで以下の3テーブルを管理する。
 
 | 項目         | 型           | 説明                    |
 | ---------- | ----------- | --------------------- |
-| id         | BIGSERIAL   | 主キー                   |
-| url        | TEXT        | 保存するWebページのURL（必須）    |
-| title      | TEXT        | リンクのタイトル（空文字を許容）      |
-| memo       | TEXT        | ユーザーが自由に記入するメモ        |
-| created_at | TIMESTAMP   | 登録日時                  |
-| updated_at | TIMESTAMP   | 最終更新日時                |
+| id          | BIGSERIAL   | 主キー                   |
+| url         | TEXT        | 保存するWebページのURL（必須）    |
+| title       | TEXT        | リンクのタイトル（空文字を許容）      |
+| memo        | TEXT        | ユーザーが自由に記入するメモ        |
+| description | TEXT        | ページの説明文（自動取得、`NOT NULL DEFAULT ''`） |
+| image_url   | TEXT        | OGP画像のURL（自動取得、`NOT NULL DEFAULT ''`） |
+| favicon_url | TEXT        | faviconのURL（自動取得、`NOT NULL DEFAULT ''`） |
+| created_at  | TIMESTAMP   | 登録日時                  |
+| updated_at  | TIMESTAMP   | 最終更新日時                |
+
+`description` / `image_url` / `favicon_url`はユーザーが直接編集する手段を持たない（`PUT`のリクエストボディにも含まれない）。`POST`時の自動取得でのみ設定され、以降は`Update`で上書きされることなく保持される。
 
 ### tags
 
@@ -83,6 +88,9 @@ GET /api/links
     "title": "Go Documentation",
     "memo": "Goの公式ドキュメント",
     "tags": ["Go", "backend"],
+    "description": "Go言語の公式ドキュメント",
+    "image_url": "https://go.dev/images/og-image.png",
+    "favicon_url": "https://go.dev/favicon.ico",
     "created_at": "2026-08-14T09:30:00Z",
     "updated_at": "2026-08-14T09:30:00Z"
   }
@@ -115,12 +123,15 @@ POST /api/links
   "title": "Example Domain",
   "memo": "",
   "tags": ["Go", "web"],
+  "description": "This domain is for use in illustrative examples.",
+  "image_url": "",
+  "favicon_url": "",
   "created_at": "2026-08-14T09:30:00Z",
   "updated_at": "2026-08-14T09:30:00Z"
 }
 ```
 
-`url`は必須。`url`が空の場合は`400 Bad Request`を返す。`title`の扱いは次節「リンク登録仕様」を参照。
+`url`は必須。`url`が空の場合は`400 Bad Request`を返す。`title` / `description` / `image_url` / `favicon_url`の扱いは次節「リンク登録仕様」を参照。リクエストボディに`description` / `image_url` / `favicon_url`を含めても無視される（これらはユーザー入力を受け付けない）。
 
 ### リンクの更新
 
@@ -130,7 +141,7 @@ PUT /api/links/:id
 
 指定されたIDのリンクを更新する。リクエストボディは`POST`と同じ形式（`url` / `title` / `memo` / `tags`）。`tags`は送信された内容で完全に置き換えられる（差分更新ではない）。対象が存在しない場合は`404 Not Found`。
 
-`PUT`では`POST`と異なり、`title`が空でもタイトル自動取得は行わない（明示的にタイトルを空にする操作として扱う）。
+`PUT`では`POST`と異なり、メタデータの自動取得は行わない。`title`が空でも再取得はせず、`description` / `image_url` / `favicon_url`は登録時に取得した値がそのまま保持される（`UPDATE`文がこれらのカラムに触れないため）。
 
 ### リンクの削除
 
@@ -140,18 +151,20 @@ DELETE /api/links/:id
 
 指定されたIDのリンクを削除する。成功時は`204 No Content`。対象が存在しない場合は`404 Not Found`。`links`の削除に伴い、`link_tags`の該当行はCASCADEで自動削除される（`tags`自体は他のリンクから参照されている可能性があるため削除しない）。
 
-## リンク登録仕様（タイトル自動取得）
+## リンク登録仕様（メタデータ自動取得）
 
 `POST /api/links`のみに適用される仕様。
 
-* `title`が指定されている場合 → ユーザーが指定した`title`をそのまま使用する（Webページへのアクセスは行わない）
-* `title`が空文字の場合 → `url`へアクセスし、レスポンスHTMLの`<title>`要素を取得して`title`に使用する
+* メタデータ取得は`title`の有無に関わらず**常に**実行する（`url`へ1回だけHTTP GETする）
+* `title`が指定されている場合 → ユーザーが指定した`title`をそのまま使用する（取得結果のtitleは破棄する）
+* `title`が空文字の場合 → 取得できたtitleを使用する（取得できなければ空文字のまま）
+* `description` / `image_url` / `favicon_url`は、`title`の指定有無に関わらず常に取得結果を使用する（ユーザーが入力する手段がないため）
 
-**重要**: タイトル取得に失敗しても`POST`自体は失敗させない。取得できなかった場合は`title`を空文字のまま保存する。外部Webサイトの状態（応答なし・エラー・SSRF対象など）によって、ユーザーのリンク保存操作が失敗する体験を避けるための設計判断である。フロントエンドは`title`が空の場合、一覧上で`url`を代わりに表示する。
+**重要**: メタデータ取得に失敗しても`POST`自体は失敗させない。取得できなかったフィールドは空文字のまま保存する。外部Webサイトの状態（応答なし・エラー・SSRF対象など）によって、ユーザーのリンク保存操作が失敗する体験を避けるための設計判断である。フロントエンドは`title`が空の場合は`url`を、`memo`が空の場合は`description`を代わりに表示する。
 
 ## メタデータ取得仕様
 
-`fetcher`パッケージ（`FetchTitle(url string) (string, error)`）が以下の流れで処理する。
+`fetcher`パッケージ（`FetchMetadata(url string) (model.Metadata, error)`）が以下の流れで処理する。
 
 ```text
 URL
@@ -166,29 +179,37 @@ HTTPレスポンス受信
   ↓
 ステータスコード検証（2xx以外は失敗として扱う）
   ↓
-レスポンスボディをHTMLとしてストリーム解析（golang.org/x/net/html）
+レスポンスボディをHTMLとしてストリーム解析（golang.org/x/net/html、</head>まで）
   ↓
-<title>要素のテキストを取得
+<title> / meta[og:description] / meta[name=description] / meta[og:image] / link[rel=icon]を抽出
   ↓
-service層がLink.titleへ反映
+service層がLinkのTitle（未指定時のみ）・Description・ImageURL・FaviconURLへ反映
   ↓
 repository層がPostgreSQLへ保存
 ```
 
+抽出の優先順位・詳細：
+
+* description: `og:description`を優先し、無ければ`<meta name="description">`
+* image: `og:image`のみ（フォールバックなし）
+* favicon: `<link rel="icon">`または`<link rel="shortcut icon">`のみ（`/favicon.ico`への当て推量アクセスは行わない）
+* image・faviconの`href`/`content`が相対URLの場合、レスポンスの最終URL（リダイレクト後）を基準に絶対URLへ解決する
+* 解決した絶対URLのスキームが`http`/`https`以外（`data:` / `javascript:`など）の場合は採用せず空文字のままにする
+* `</head>`が出現した時点で走査を打ち切る（対象要素は`<head>`内にのみ存在するため）
+
 ## エラー仕様
 
-`fetcher.FetchTitle`が失敗するケースと、その結果`POST /api/links`がどう振る舞うかを以下にまとめる。
+`fetcher.FetchMetadata`が失敗するケースと、その結果`POST /api/links`がどう振る舞うかを以下にまとめる。
 
-| ケース                          | `POST /api/links`のレスポンス | 保存されるtitle |
+| ケース                          | `POST /api/links`のレスポンス | 保存されるtitle/description/image_url/favicon_url |
 | ---------------------------- | ------------------------ | ----------- |
-| URLのパース失敗                     | `201 Created`（保存は成功）     | 空文字         |
-| サポート外スキーム（`http`/`https`以外）   | `201 Created`             | 空文字         |
-| SSRF対策によるアクセス拒否               | `201 Created`             | 空文字         |
-| DNS解決失敗・接続失敗                  | `201 Created`             | 空文字         |
-| タイムアウト                        | `201 Created`             | 空文字         |
-| HTTP 4xx / 5xx                | `201 Created`             | 空文字         |
-| レスポンスHTMLに`<title>`が存在しない     | `201 Created`             | 空文字         |
-| `<title>`が空文字またはホワイトスペースのみ    | `201 Created`             | 空文字         |
+| URLのパース失敗                     | `201 Created`（保存は成功）     | すべて空文字（titleはユーザー指定があればそれを使用） |
+| サポート外スキーム（`http`/`https`以外）   | `201 Created`             | 同上 |
+| SSRF対策によるアクセス拒否               | `201 Created`             | 同上 |
+| DNS解決失敗・接続失敗                  | `201 Created`             | 同上 |
+| タイムアウト                        | `201 Created`             | 同上 |
+| HTTP 4xx / 5xx                | `201 Created`             | 同上 |
+| レスポンスHTMLに該当要素が存在しない          | `201 Created`             | 見つからなかったフィールドのみ空文字 |
 
 すべてのケースで`POST`自体は成功として扱う（`url`が空という唯一のバリデーションエラーのみ`400`を返す）。取得失敗の詳細はサーバーログ（`log.Printf`）にのみ記録し、APIレスポンスには含めない。SSRF拒否についても他の失敗と同じ扱いとし、クライアントにネットワーク構成の手がかりを与えない。
 
@@ -222,20 +243,21 @@ repository層がPostgreSQLへ保存
 | レスポンスボディの読み取り上限           | 512KB   |
 | リダイレクト回数の上限               | 3回      |
 
-**採用理由**: リンクの登録はユーザーが画面を見ながら待つ操作であるため、応答の遅い外部サイトのために体感速度を大きく損なわないことを優先した。5秒あれば大半のWebサイトはヘッダー〜HTML冒頭までを返せる一方、応答がないサイトを無期限に待つことは避けられる。`<title>`要素は通常HTMLの`<head>`内、先頭数KB以内に出現するため、512KBの読み取り上限で実用上ほぼ全てのケースをカバーできる。値は固定値としてコード内に定義しており、現時点では環境変数などによる外部設定は行っていない。
+**採用理由**: リンクの登録はユーザーが画面を見ながら待つ操作であるため、応答の遅い外部サイトのために体感速度を大きく損なわないことを優先した。5秒あれば大半のWebサイトはヘッダー〜`<head>`終了までを返せる一方、応答がないサイトを無期限に待つことは避けられる。`title` / `description` / `image` / `favicon`はいずれも通常HTMLの`<head>`内、先頭数KB以内に出現するため、512KBの読み取り上限で実用上ほぼ全てのケースをカバーできる。値は固定値としてコード内に定義しており、現時点では環境変数などによる外部設定は行っていない。
 
 ## 将来的な拡張
 
-現在の`fetcher`はタイトルのみを取得する。将来的には取得するメタデータを拡張できるよう、`fetcher`パッケージをHTML取得処理とタイトル抽出処理に分離した構成にしている（`FetchTitle`とは別に、内部の`parseTitle`はHTMLストリームから独立して呼び出し可能）。
+`fetcher`は現在title・description・OGP画像・faviconを取得する（`FetchMetadata`が`model.Metadata`を返す）。取得した`image_url`はAPIレスポンスに含まれるが、現時点でフロントエンドには表示していない（一覧UIはfaviconとdescription/memoのみを表示する設計）。
 
 拡張候補（未実装）：
 
 ```text
 Metadata
-├── Title      （実装済み）
-├── Description
-├── OGP（og:title, og:image など）
-└── Favicon
+├── Title         （実装済み）
+├── Description   （実装済み: og:description優先、フォールバックでmeta description）
+├── ImageURL       （実装済み: 取得・保存のみ。UI表示は未実装）
+├── FaviconURL     （実装済み）
+└── OGP Title（og:title、現在はHTML<title>のみを使用）
 ```
 
 その他、README.mdのRoadmapに記載の以下も未実装である。
