@@ -28,13 +28,16 @@ type linkRepository interface {
 	List(query, tag string) ([]model.Link, error)
 	Update(link model.Link) (model.Link, error)
 	Delete(id int) error
+	UpdateStatus(id int, status string, checkedAt time.Time) error
 }
 
 // metadataFetcher fetches page metadata (title, description, OGP image,
-// favicon) for a URL. Failures are non-fatal: callers fall back to whatever
-// fields the caller already has rather than rejecting the request.
+// favicon) for a URL, and can check whether a URL is currently reachable.
+// Failures are non-fatal: callers fall back to whatever fields the caller
+// already has rather than rejecting the request.
 type metadataFetcher interface {
 	FetchMetadata(url string) (model.Metadata, error)
+	CheckAlive(url string) (bool, error)
 }
 
 type LinkService struct {
@@ -133,6 +136,47 @@ func (s *LinkService) BulkCreateLinks(urls []string, tags []string) BulkCreateRe
 	}
 
 	return result
+}
+
+// CheckLinks checks every saved link concurrently (bounded by
+// maxConcurrentFetches) and updates its status to StatusOK or StatusBroken.
+// It returns the refreshed list of all links. A single link's check failing
+// doesn't stop the others.
+func (s *LinkService) CheckLinks() ([]model.Link, error) {
+	links, err := s.repo.List("", "")
+	if err != nil {
+		return nil, err
+	}
+
+	sem := make(chan struct{}, maxConcurrentFetches)
+	var wg sync.WaitGroup
+
+	for _, link := range links {
+		wg.Add(1)
+		go func(link model.Link) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			alive, err := s.fetcher.CheckAlive(link.URL)
+			if err != nil {
+				log.Printf("check alive for %s: %v", link.URL, err)
+			}
+
+			status := model.StatusBroken
+			if alive {
+				status = model.StatusOK
+			}
+
+			if err := s.repo.UpdateStatus(link.ID, status, time.Now()); err != nil {
+				log.Printf("update status for link %d: %v", link.ID, err)
+			}
+		}(link)
+	}
+	wg.Wait()
+
+	return s.repo.List("", "")
 }
 
 // normalizeTags trims whitespace and drops empty or duplicate tag names.

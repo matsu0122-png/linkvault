@@ -13,10 +13,11 @@ import (
 )
 
 type mockLinkRepository struct {
-	createFn func(link model.Link) (model.Link, error)
-	listFn   func(query, tag string) ([]model.Link, error)
-	updateFn func(link model.Link) (model.Link, error)
-	deleteFn func(id int) error
+	createFn       func(link model.Link) (model.Link, error)
+	listFn         func(query, tag string) ([]model.Link, error)
+	updateFn       func(link model.Link) (model.Link, error)
+	deleteFn       func(id int) error
+	updateStatusFn func(id int, status string, checkedAt time.Time) error
 }
 
 func (m *mockLinkRepository) Create(link model.Link) (model.Link, error) {
@@ -35,22 +36,36 @@ func (m *mockLinkRepository) Delete(id int) error {
 	return m.deleteFn(id)
 }
 
+func (m *mockLinkRepository) UpdateStatus(id int, status string, checkedAt time.Time) error {
+	return m.updateStatusFn(id, status, checkedAt)
+}
+
 type mockMetadataFetcher struct {
-	fetchFn func(url string) (model.Metadata, error)
+	fetchFn      func(url string) (model.Metadata, error)
+	checkAliveFn func(url string) (bool, error)
 }
 
 func (m *mockMetadataFetcher) FetchMetadata(url string) (model.Metadata, error) {
 	return m.fetchFn(url)
 }
 
-// unusedFetcher fails the test if FetchMetadata is called, for methods that
-// never fetch (List/Update/Delete) or that return before reaching the fetch.
+func (m *mockMetadataFetcher) CheckAlive(url string) (bool, error) {
+	return m.checkAliveFn(url)
+}
+
+// unusedFetcher fails the test if FetchMetadata or CheckAlive is called, for
+// methods that never fetch (List/Update/Delete) or that return before
+// reaching the fetch.
 func unusedFetcher(t *testing.T) *mockMetadataFetcher {
 	t.Helper()
 	return &mockMetadataFetcher{
 		fetchFn: func(url string) (model.Metadata, error) {
 			t.Fatal("fetcher should not be called")
 			return model.Metadata{}, nil
+		},
+		checkAliveFn: func(url string) (bool, error) {
+			t.Fatal("checker should not be called")
+			return false, nil
 		},
 	}
 }
@@ -317,6 +332,59 @@ func TestBulkCreateLinks(t *testing.T) {
 			t.Errorf("exceeded concurrency limit: observed %d, want <= %d", max, maxConcurrentFetches)
 		}
 	})
+}
+
+func TestCheckLinks(t *testing.T) {
+	links := []model.Link{
+		{ID: 1, URL: "https://ok.example.com"},
+		{ID: 2, URL: "https://broken.example.com"},
+		{ID: 3, URL: "https://error.example.com"},
+	}
+
+	var mu sync.Mutex
+	gotStatuses := make(map[int]string)
+
+	repo := &mockLinkRepository{
+		listFn: func(query, tag string) ([]model.Link, error) {
+			return links, nil
+		},
+		updateStatusFn: func(id int, status string, checkedAt time.Time) error {
+			mu.Lock()
+			gotStatuses[id] = status
+			mu.Unlock()
+			return nil
+		},
+	}
+	fetcher := &mockMetadataFetcher{
+		checkAliveFn: func(url string) (bool, error) {
+			switch url {
+			case "https://ok.example.com":
+				return true, nil
+			case "https://broken.example.com":
+				return false, nil
+			default:
+				return false, errors.New("timeout")
+			}
+		},
+	}
+	s := NewLinkService(repo, fetcher)
+
+	got, err := s.CheckLinks()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != len(links) {
+		t.Fatalf("expected %d links returned, got %d", len(links), len(got))
+	}
+
+	want := map[int]string{1: model.StatusOK, 2: model.StatusBroken, 3: model.StatusBroken}
+	mu.Lock()
+	defer mu.Unlock()
+	for id, wantStatus := range want {
+		if gotStatuses[id] != wantStatus {
+			t.Errorf("link %d status = %q, want %q", id, gotStatuses[id], wantStatus)
+		}
+	}
 }
 
 func TestListLinks(t *testing.T) {

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"time"
 
 	"github.com/lib/pq"
 	"github.com/matsu0122-png/linkvault/backend/model"
@@ -35,6 +36,7 @@ func (r *LinkRepository) Create(link model.Link) (model.Link, error) {
 	).Scan(&link.ID); err != nil {
 		return model.Link{}, err
 	}
+	link.Status = model.StatusUnknown
 
 	tagIDs, err := upsertTags(tx, link.Tags)
 	if err != nil {
@@ -91,6 +93,26 @@ func linkTags(tx *sql.Tx, linkID int, tagIDs []int64) error {
 	return nil
 }
 
+func (r *LinkRepository) UpdateStatus(id int, status string, checkedAt time.Time) error {
+	query := `UPDATE links SET status = $1, checked_at = $2 WHERE id = $3`
+
+	result, err := r.db.Exec(query, status, checkedAt, id)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return sql.ErrNoRows
+	}
+
+	return nil
+}
+
 func (r *LinkRepository) Delete(id int) error {
 	query := `DELETE FROM links WHERE id = $1`
 
@@ -115,7 +137,8 @@ func (r *LinkRepository) Delete(id int) error {
 // and/or an exact tag name. Passing "" for either skips that filter.
 func (r *LinkRepository) List(query, tag string) ([]model.Link, error) {
 	sqlQuery := `
-		SELECT l.id, l.url, l.title, l.memo, l.description, l.image_url, l.favicon_url, l.created_at, l.updated_at,
+		SELECT l.id, l.url, l.title, l.memo, l.description, l.image_url, l.favicon_url,
+		       l.status, l.checked_at, l.created_at, l.updated_at,
 		       COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}')
 		FROM links l
 		LEFT JOIN link_tags lt ON lt.link_id = l.id
@@ -140,14 +163,19 @@ func (r *LinkRepository) List(query, tag string) ([]model.Link, error) {
 	links := []model.Link{}
 	for rows.Next() {
 		var link model.Link
+		var checkedAt sql.NullTime
 
 		err := rows.Scan(
 			&link.ID, &link.URL, &link.Title, &link.Memo,
 			&link.Description, &link.ImageURL, &link.FaviconURL,
+			&link.Status, &checkedAt,
 			&link.CreatedAt, &link.UpdatedAt, pq.Array(&link.Tags),
 		)
 		if err != nil {
 			return nil, err
+		}
+		if checkedAt.Valid {
+			link.CheckedAt = &checkedAt.Time
 		}
 
 		links = append(links, link)
@@ -167,20 +195,25 @@ func (r *LinkRepository) Update(link model.Link) (model.Link, error) {
 	}
 	defer tx.Rollback()
 
-	// description/image_url/favicon_url are intentionally left untouched here:
-	// there's no way to edit them from the UI, and Update never re-fetches, so
-	// overwriting them would wipe out whatever Create originally captured.
+	// description/image_url/favicon_url/status/checked_at are intentionally left
+	// untouched here: there's no way to edit them from the UI, and Update never
+	// re-fetches or re-checks, so overwriting them would wipe out whatever
+	// Create/CheckLinks originally captured.
 	query := `
 		UPDATE links
 		SET url = $1, title = $2, memo = $3, updated_at = $4
 		WHERE id = $5
-		RETURNING created_at, description, image_url, favicon_url
+		RETURNING created_at, description, image_url, favicon_url, status, checked_at
 	`
 
+	var checkedAt sql.NullTime
 	if err := tx.QueryRow(query, link.URL, link.Title, link.Memo, link.UpdatedAt, link.ID).Scan(
-		&link.CreatedAt, &link.Description, &link.ImageURL, &link.FaviconURL,
+		&link.CreatedAt, &link.Description, &link.ImageURL, &link.FaviconURL, &link.Status, &checkedAt,
 	); err != nil {
 		return model.Link{}, err
+	}
+	if checkedAt.Valid {
+		link.CheckedAt = &checkedAt.Time
 	}
 
 	if _, err := tx.Exec(`DELETE FROM link_tags WHERE link_id = $1`, link.ID); err != nil {

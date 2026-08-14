@@ -52,6 +52,9 @@ func TestLinkRepositoryCreate(t *testing.T) {
 	if got.Description != "an example page" || got.ImageURL != "https://example.com/og.png" || got.FaviconURL != "https://example.com/favicon.png" {
 		t.Errorf("unexpected metadata: %+v", got)
 	}
+	if got.Status != model.StatusUnknown || got.CheckedAt != nil {
+		t.Errorf("expected a fresh link to be unchecked, got status=%q checkedAt=%v", got.Status, got.CheckedAt)
+	}
 }
 
 func TestLinkRepositoryList(t *testing.T) {
@@ -182,6 +185,56 @@ func TestLinkRepositoryUpdate(t *testing.T) {
 			if l.ID == created.ID && (len(l.Tags) != 1 || l.Tags[0] != "backend") {
 				t.Errorf("expected stored tags to be [backend], got %+v", l.Tags)
 			}
+		}
+	})
+}
+
+func TestLinkRepositoryUpdateStatus(t *testing.T) {
+	repo := setupTestRepo(t)
+	now := time.Now().Truncate(time.Second)
+
+	created, err := repo.Create(model.Link{URL: "https://example.com", Title: "Example", CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("setup: failed to create link: %v", err)
+	}
+
+	t.Run("statusとchecked_atを更新できる", func(t *testing.T) {
+		checkedAt := time.Now().Truncate(time.Second)
+		if err := repo.UpdateStatus(created.ID, model.StatusOK, checkedAt); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		links, err := repo.List("", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(links) != 1 || links[0].Status != model.StatusOK {
+			t.Fatalf("expected status to be ok, got %+v", links)
+		}
+		if links[0].CheckedAt == nil || !links[0].CheckedAt.Equal(checkedAt) {
+			t.Errorf("expected checkedAt %v, got %v", checkedAt, links[0].CheckedAt)
+		}
+	})
+
+	t.Run("存在しないIDならsql.ErrNoRowsを返す", func(t *testing.T) {
+		err := repo.UpdateStatus(999999, model.StatusBroken, time.Now())
+		if err != sql.ErrNoRows {
+			t.Errorf("expected sql.ErrNoRows, got %v", err)
+		}
+	})
+
+	t.Run("Updateではstatus/checked_atが上書きされず保持される", func(t *testing.T) {
+		checkedAt := time.Now().Truncate(time.Second)
+		if err := repo.UpdateStatus(created.ID, model.StatusBroken, checkedAt); err != nil {
+			t.Fatalf("setup: failed to set status: %v", err)
+		}
+
+		updated, err := repo.Update(model.Link{ID: created.ID, URL: created.URL, Title: "Renamed", UpdatedAt: time.Now()})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if updated.Status != model.StatusBroken || updated.CheckedAt == nil || !updated.CheckedAt.Equal(checkedAt) {
+			t.Errorf("expected status/checkedAt to be preserved, got status=%q checkedAt=%v", updated.Status, updated.CheckedAt)
 		}
 	})
 }

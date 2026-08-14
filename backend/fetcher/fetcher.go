@@ -55,12 +55,8 @@ func New() *Fetcher {
 // and favicon from the response HTML. Fields that can't be found are left
 // as empty strings rather than causing an error.
 func (f *Fetcher) FetchMetadata(rawURL string) (model.Metadata, error) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return model.Metadata{}, fmt.Errorf("parse url: %w", err)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return model.Metadata{}, fmt.Errorf("unsupported scheme: %s", parsed.Scheme)
+	if err := validateFetchURL(rawURL); err != nil {
+		return model.Metadata{}, err
 	}
 
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
@@ -79,6 +75,45 @@ func (f *Fetcher) FetchMetadata(rawURL string) (model.Metadata, error) {
 	}
 
 	return parseMetadata(io.LimitReader(resp.Body, maxBodyBytes), resp.Request.URL), nil
+}
+
+// CheckAlive reports whether rawURL currently responds successfully (2xx,
+// after following redirects). A non-nil error means the check itself failed
+// (invalid URL, SSRF block, timeout, connection error, or a non-2xx
+// response) — the caller should treat that the same as "not alive".
+func (f *Fetcher) CheckAlive(rawURL string) (bool, error) {
+	if err := validateFetchURL(rawURL); err != nil {
+		return false, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return false, fmt.Errorf("build request: %w", err)
+	}
+
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, fmt.Errorf("unexpected status: %d", resp.StatusCode)
+	}
+
+	return true, nil
+}
+
+func validateFetchURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse url: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme: %s", parsed.Scheme)
+	}
+	return nil
 }
 
 // parseMetadata scans HTML and extracts title, description, OGP image, and

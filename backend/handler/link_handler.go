@@ -100,6 +100,16 @@ func (h *LinkHandler) BulkCreateLinks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *LinkHandler) CheckLinks(w http.ResponseWriter, r *http.Request) {
+	links, err := h.service.CheckLinks()
+	if err != nil {
+		http.Error(w, "Failed to check links", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, links)
+}
+
 func (h *LinkHandler) UpdateLink(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
