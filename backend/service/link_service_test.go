@@ -31,6 +31,26 @@ func (m *mockLinkRepository) Delete(id int) error {
 	return m.deleteFn(id)
 }
 
+type mockTitleFetcher struct {
+	fetchFn func(url string) (string, error)
+}
+
+func (m *mockTitleFetcher) FetchTitle(url string) (string, error) {
+	return m.fetchFn(url)
+}
+
+// unusedFetcher fails the test if FetchTitle is called, for cases where a
+// title is already supplied and fetching should be skipped entirely.
+func unusedFetcher(t *testing.T) *mockTitleFetcher {
+	t.Helper()
+	return &mockTitleFetcher{
+		fetchFn: func(url string) (string, error) {
+			t.Fatal("fetcher should not be called")
+			return "", nil
+		},
+	}
+}
+
 func TestCreateLink(t *testing.T) {
 	t.Run("成功したらリポジトリに保存されたリンクを返す", func(t *testing.T) {
 		repo := &mockLinkRepository{
@@ -39,7 +59,7 @@ func TestCreateLink(t *testing.T) {
 				return link, nil
 			},
 		}
-		s := NewLinkService(repo)
+		s := NewLinkService(repo, unusedFetcher(t))
 
 		got, err := s.CreateLink("https://example.com", "Example", "memo", nil)
 		if err != nil {
@@ -57,7 +77,7 @@ func TestCreateLink(t *testing.T) {
 				return model.Link{}, nil
 			},
 		}
-		s := NewLinkService(repo)
+		s := NewLinkService(repo, unusedFetcher(t))
 
 		_, err := s.CreateLink("", "Example", "memo", nil)
 		if err == nil {
@@ -74,7 +94,7 @@ func TestCreateLink(t *testing.T) {
 				return link, nil
 			},
 		}
-		s := NewLinkService(repo)
+		s := NewLinkService(repo, unusedFetcher(t))
 
 		_, err := s.CreateLink("https://example.com", "Example", "memo", []string{" Go ", "web", "Go", "  "})
 		if err != nil {
@@ -84,6 +104,52 @@ func TestCreateLink(t *testing.T) {
 		want := []string{"Go", "web"}
 		if len(gotTags) != len(want) || gotTags[0] != want[0] || gotTags[1] != want[1] {
 			t.Errorf("unexpected tags: %+v", gotTags)
+		}
+	})
+
+	t.Run("titleが空ならfetcherで取得したtitleを使う", func(t *testing.T) {
+		repo := &mockLinkRepository{
+			createFn: func(link model.Link) (model.Link, error) {
+				link.ID = 1
+				return link, nil
+			},
+		}
+		fetcher := &mockTitleFetcher{
+			fetchFn: func(url string) (string, error) {
+				return "Fetched Title", nil
+			},
+		}
+		s := NewLinkService(repo, fetcher)
+
+		got, err := s.CreateLink("https://example.com", "", "memo", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Title != "Fetched Title" {
+			t.Errorf("expected fetched title, got %q", got.Title)
+		}
+	})
+
+	t.Run("titleが空でfetcherが失敗しても空のまま保存される", func(t *testing.T) {
+		repo := &mockLinkRepository{
+			createFn: func(link model.Link) (model.Link, error) {
+				link.ID = 1
+				return link, nil
+			},
+		}
+		fetcher := &mockTitleFetcher{
+			fetchFn: func(url string) (string, error) {
+				return "", errors.New("timeout")
+			},
+		}
+		s := NewLinkService(repo, fetcher)
+
+		got, err := s.CreateLink("https://example.com", "", "memo", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Title != "" {
+			t.Errorf("expected empty title, got %q", got.Title)
 		}
 	})
 }
@@ -97,7 +163,7 @@ func TestListLinks(t *testing.T) {
 			return want, nil
 		},
 	}
-	s := NewLinkService(repo)
+	s := NewLinkService(repo, unusedFetcher(t))
 
 	got, err := s.ListLinks("example", "Go")
 	if err != nil {
@@ -118,7 +184,7 @@ func TestUpdateLink(t *testing.T) {
 				return link, nil
 			},
 		}
-		s := NewLinkService(repo)
+		s := NewLinkService(repo, unusedFetcher(t))
 
 		got, err := s.UpdateLink(1, "https://example.com", "Example", "memo", nil)
 		if err != nil {
@@ -136,7 +202,7 @@ func TestUpdateLink(t *testing.T) {
 				return model.Link{}, nil
 			},
 		}
-		s := NewLinkService(repo)
+		s := NewLinkService(repo, unusedFetcher(t))
 
 		_, err := s.UpdateLink(1, "", "Example", "memo", nil)
 		if err == nil {
@@ -150,7 +216,7 @@ func TestUpdateLink(t *testing.T) {
 				return model.Link{}, sql.ErrNoRows
 			},
 		}
-		s := NewLinkService(repo)
+		s := NewLinkService(repo, unusedFetcher(t))
 
 		_, err := s.UpdateLink(1, "https://example.com", "Example", "memo", nil)
 		if !errors.Is(err, ErrNotFound) {
@@ -166,7 +232,7 @@ func TestDeleteLink(t *testing.T) {
 				return nil
 			},
 		}
-		s := NewLinkService(repo)
+		s := NewLinkService(repo, unusedFetcher(t))
 
 		if err := s.DeleteLink(1); err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -179,7 +245,7 @@ func TestDeleteLink(t *testing.T) {
 				return sql.ErrNoRows
 			},
 		}
-		s := NewLinkService(repo)
+		s := NewLinkService(repo, unusedFetcher(t))
 
 		err := s.DeleteLink(1)
 		if !errors.Is(err, ErrNotFound) {

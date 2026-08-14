@@ -3,6 +3,7 @@ package service
 import (
 	"database/sql"
 	"errors"
+	"log"
 	"strings"
 	"time"
 
@@ -18,17 +19,32 @@ type linkRepository interface {
 	Delete(id int) error
 }
 
-type LinkService struct {
-	repo linkRepository
+// titleFetcher fetches the <title> of a web page. Failures are non-fatal:
+// callers fall back to an empty title rather than rejecting the request.
+type titleFetcher interface {
+	FetchTitle(url string) (string, error)
 }
 
-func NewLinkService(repo linkRepository) *LinkService {
-	return &LinkService{repo: repo}
+type LinkService struct {
+	repo    linkRepository
+	fetcher titleFetcher
+}
+
+func NewLinkService(repo linkRepository, fetcher titleFetcher) *LinkService {
+	return &LinkService{repo: repo, fetcher: fetcher}
 }
 
 func (s *LinkService) CreateLink(url, title, memo string, tags []string) (model.Link, error) {
 	if url == "" {
 		return model.Link{}, errors.New("url is required")
+	}
+
+	if title == "" {
+		if fetched, err := s.fetcher.FetchTitle(url); err != nil {
+			log.Printf("fetch title for %s: %v", url, err)
+		} else {
+			title = fetched
+		}
 	}
 
 	now := time.Now()

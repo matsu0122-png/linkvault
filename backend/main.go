@@ -6,6 +6,7 @@ import (
 
 	"github.com/matsu0122-png/linkvault/backend/config"
 	"github.com/matsu0122-png/linkvault/backend/database"
+	"github.com/matsu0122-png/linkvault/backend/fetcher"
 	"github.com/matsu0122-png/linkvault/backend/handler"
 	"github.com/matsu0122-png/linkvault/backend/repository"
 	"github.com/matsu0122-png/linkvault/backend/service"
@@ -21,7 +22,7 @@ func main() {
 	defer db.Close()
 
 	linkRepo := repository.NewLinkRepository(db)
-	linkService := service.NewLinkService(linkRepo)
+	linkService := service.NewLinkService(linkRepo, fetcher.New())
 	linkHandler := handler.NewLinkHandler(linkService)
 
 	mux := http.NewServeMux()
