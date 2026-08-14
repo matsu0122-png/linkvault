@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>LinkVault</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <h1>LinkVault</h1>
+    <form id="save-form">
+      <p id="url" class="url"></p>
+      <input type="text" id="title" placeholder="タイトル（空欄なら自動取得）" />
+      <input type="text" id="memo" placeholder="メモ" />
+      <input type="text" id="tags" placeholder="タグ（カンマ区切り）" />
+      <button type="submit" id="save-button">保存</button>
+      <p id="message" class="message" hidden></p>
+    </form>
+    <script src="popup.js"></script>
+  </body>
+</html>

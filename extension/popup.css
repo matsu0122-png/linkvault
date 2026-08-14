@@ -1,0 +1,83 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 300px;
+  margin: 0;
+  padding: 16px;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  background: #fafaf9;
+  color: #292524;
+}
+
+h1 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1c1917;
+}
+
+.url {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: #f5f5f4;
+  color: #78716c;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  overflow-wrap: break-word;
+}
+
+input[type="text"] {
+  display: block;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid #d6d3d1;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 13px;
+  color: #1c1917;
+}
+
+input[type="text"]:focus {
+  outline: none;
+  border-color: #14b8a6;
+  box-shadow: 0 0 0 1px #14b8a6;
+}
+
+button {
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 999px;
+  background: #0d9488;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #0f766e;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.message {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #57534e;
+}
+
+.message.error {
+  color: #e11d48;
+}
