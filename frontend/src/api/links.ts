@@ -10,3 +10,21 @@ export async function fetchLinks(): Promise<Link[]> {
   }
   return res.json()
 }
+
+export type CreateLinkInput = {
+  url: string
+  title: string
+  memo: string
+}
+
+export async function createLink(input: CreateLinkInput): Promise<Link> {
+  const res = await fetch(`${API_BASE_URL}/api/links`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  if (!res.ok) {
+    throw new Error(`failed to create link: ${res.status}`)
+  }
+  return res.json()
+}
