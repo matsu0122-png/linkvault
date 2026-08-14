@@ -3,10 +3,12 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 
+	"github.com/matsu0122-png/linkvault/backend/model"
 	"github.com/matsu0122-png/linkvault/backend/service"
 )
 
@@ -52,6 +54,50 @@ func (h *LinkHandler) CreateLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, link)
+}
+
+type bulkLinkRequest struct {
+	URLs []string `json:"urls"`
+	Tags []string `json:"tags"`
+}
+
+type bulkLinkFailure struct {
+	URL   string `json:"url"`
+	Error string `json:"error"`
+}
+
+type bulkLinkResponse struct {
+	Created []model.Link      `json:"created"`
+	Failed  []bulkLinkFailure `json:"failed"`
+}
+
+func (h *LinkHandler) BulkCreateLinks(w http.ResponseWriter, r *http.Request) {
+	var req bulkLinkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.URLs) == 0 {
+		http.Error(w, "urls is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.URLs) > service.MaxBulkURLs {
+		http.Error(w, fmt.Sprintf("too many urls: max %d", service.MaxBulkURLs), http.StatusBadRequest)
+		return
+	}
+
+	result := h.service.BulkCreateLinks(req.URLs, req.Tags)
+
+	resp := bulkLinkResponse{
+		Created: result.Created,
+		Failed:  make([]bulkLinkFailure, len(result.Failed)),
+	}
+	for i, f := range result.Failed {
+		resp.Failed[i] = bulkLinkFailure{URL: f.URL, Error: f.Error}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *LinkHandler) UpdateLink(w http.ResponseWriter, r *http.Request) {

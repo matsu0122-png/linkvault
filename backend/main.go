@@ -28,6 +28,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/links", linkHandler.ListLinks)
 	mux.HandleFunc("POST /api/links", linkHandler.CreateLink)
+	mux.HandleFunc("POST /api/links/bulk", linkHandler.BulkCreateLinks)
 	mux.HandleFunc("PUT /api/links/{id}", linkHandler.UpdateLink)
 	mux.HandleFunc("DELETE /api/links/{id}", linkHandler.DeleteLink)
 

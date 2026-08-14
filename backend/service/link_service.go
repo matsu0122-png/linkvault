@@ -5,12 +5,23 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/matsu0122-png/linkvault/backend/model"
 )
 
 var ErrNotFound = errors.New("link not found")
+
+const (
+	// MaxBulkURLs is the largest number of URLs accepted by a single
+	// BulkCreateLinks call.
+	MaxBulkURLs = 50
+
+	// maxConcurrentFetches bounds how many URLs are fetched at once during a
+	// bulk create, to avoid hammering either this server or the target sites.
+	maxConcurrentFetches = 5
+)
 
 type linkRepository interface {
 	Create(link model.Link) (model.Link, error)
@@ -66,6 +77,62 @@ func (s *LinkService) CreateLink(url, title, memo string, tags []string) (model.
 	link.UpdatedAt = now
 
 	return s.repo.Create(link)
+}
+
+// BulkCreateResult is the outcome of a BulkCreateLinks call. Created and
+// Failed preserve the order of the input urls slice.
+type BulkCreateResult struct {
+	Created []model.Link
+	Failed  []BulkCreateFailure
+}
+
+type BulkCreateFailure struct {
+	URL   string
+	Error string
+}
+
+// BulkCreateLinks creates a link for each url, fetching metadata for all of
+// them concurrently (bounded by maxConcurrentFetches). tags are applied to
+// every created link. One url failing (e.g. it's empty) does not affect the
+// others; each is created independently via CreateLink, so metadata-fetch
+// failures are handled the same non-fatal way as a single create.
+func (s *LinkService) BulkCreateLinks(urls []string, tags []string) BulkCreateResult {
+	type outcome struct {
+		link model.Link
+		err  error
+	}
+
+	outcomes := make([]outcome, len(urls))
+	sem := make(chan struct{}, maxConcurrentFetches)
+	var wg sync.WaitGroup
+
+	for i, url := range urls {
+		wg.Add(1)
+		go func(i int, url string) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			link, err := s.CreateLink(url, "", "", tags)
+			outcomes[i] = outcome{link: link, err: err}
+		}(i, url)
+	}
+	wg.Wait()
+
+	result := BulkCreateResult{
+		Created: make([]model.Link, 0, len(urls)),
+		Failed:  make([]BulkCreateFailure, 0),
+	}
+	for i, o := range outcomes {
+		if o.err != nil {
+			result.Failed = append(result.Failed, BulkCreateFailure{URL: urls[i], Error: o.err.Error()})
+			continue
+		}
+		result.Created = append(result.Created, o.link)
+	}
+
+	return result
 }
 
 // normalizeTags trims whitespace and drops empty or duplicate tag names.

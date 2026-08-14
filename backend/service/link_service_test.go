@@ -3,7 +3,11 @@ package service
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/matsu0122-png/linkvault/backend/model"
 )
@@ -214,6 +218,103 @@ func TestCreateLink(t *testing.T) {
 		}
 		if got.Description != "desc" || got.ImageURL != "https://example.com/og.png" || got.FaviconURL != "https://example.com/favicon.png" {
 			t.Errorf("unexpected metadata: %+v", got)
+		}
+	})
+}
+
+func TestBulkCreateLinks(t *testing.T) {
+	t.Run("全て成功したら入力順でCreatedに並ぶ", func(t *testing.T) {
+		var nextID int64
+		repo := &mockLinkRepository{
+			createFn: func(link model.Link) (model.Link, error) {
+				link.ID = int(atomic.AddInt64(&nextID, 1))
+				return link, nil
+			},
+		}
+		fetcher := noopFetcher()
+		s := NewLinkService(repo, fetcher)
+
+		urls := []string{"https://a.example.com", "https://b.example.com", "https://c.example.com"}
+		result := s.BulkCreateLinks(urls, []string{"Go"})
+
+		if len(result.Failed) != 0 {
+			t.Fatalf("expected no failures, got %+v", result.Failed)
+		}
+		if len(result.Created) != len(urls) {
+			t.Fatalf("expected %d created, got %d", len(urls), len(result.Created))
+		}
+		for i, url := range urls {
+			if result.Created[i].URL != url {
+				t.Errorf("Created[%d].URL = %q, want %q (order not preserved)", i, result.Created[i].URL, url)
+			}
+			if len(result.Created[i].Tags) != 1 || result.Created[i].Tags[0] != "Go" {
+				t.Errorf("Created[%d].Tags = %+v, want [Go]", i, result.Created[i].Tags)
+			}
+		}
+	})
+
+	t.Run("一部URLが不正でも他は成功する", func(t *testing.T) {
+		repo := &mockLinkRepository{
+			createFn: func(link model.Link) (model.Link, error) {
+				return link, nil
+			},
+		}
+		s := NewLinkService(repo, noopFetcher())
+
+		urls := []string{"https://a.example.com", "", "https://c.example.com"}
+		result := s.BulkCreateLinks(urls, nil)
+
+		if len(result.Created) != 2 {
+			t.Fatalf("expected 2 created, got %d: %+v", len(result.Created), result.Created)
+		}
+		if len(result.Failed) != 1 || result.Failed[0].URL != "" {
+			t.Fatalf("expected the empty url to be recorded as a failure, got %+v", result.Failed)
+		}
+	})
+
+	t.Run("同時実行数の上限を守りつつ並行実行される", func(t *testing.T) {
+		var mu sync.Mutex
+		current, max := 0, 0
+		fetcher := &mockMetadataFetcher{
+			fetchFn: func(url string) (model.Metadata, error) {
+				mu.Lock()
+				current++
+				if current > max {
+					max = current
+				}
+				mu.Unlock()
+
+				time.Sleep(20 * time.Millisecond)
+
+				mu.Lock()
+				current--
+				mu.Unlock()
+
+				return model.Metadata{}, nil
+			},
+		}
+		repo := &mockLinkRepository{
+			createFn: func(link model.Link) (model.Link, error) {
+				return link, nil
+			},
+		}
+		s := NewLinkService(repo, fetcher)
+
+		urls := make([]string, maxConcurrentFetches*2)
+		for i := range urls {
+			urls[i] = fmt.Sprintf("https://example.com/%d", i)
+		}
+
+		result := s.BulkCreateLinks(urls, nil)
+
+		if len(result.Created) != len(urls) {
+			t.Fatalf("expected %d created, got %d", len(urls), len(result.Created))
+		}
+		if max <= 1 {
+			t.Error("expected fetches to run concurrently, but max observed concurrency was 1")
+		}
+		if max > maxConcurrentFetches {
+			t.Errorf("exceeded concurrency limit: observed %d, want <= %d", max, maxConcurrentFetches)
 		}
 	})
 }
