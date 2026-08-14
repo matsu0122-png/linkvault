@@ -74,6 +74,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
 
       - name: Apply migrations
         run: psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -f migrations/0001_create_links_table.sql
