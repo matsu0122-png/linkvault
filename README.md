@@ -1,6 +1,10 @@
 # LinkVault
 
+[![build](https://github.com/matsu0122-png/linkvault/actions/workflows/build.yaml/badge.svg)](https://github.com/matsu0122-png/linkvault/actions/workflows/build.yaml)
+
 > Webで見つけた大切な情報を、あとから簡単に見つけられるように。
+
+
 
 ![Status](https://img.shields.io/badge/status-development-orange)
 
