@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS links (
+    id         BIGSERIAL PRIMARY KEY,
+    url        TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    memo       TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
