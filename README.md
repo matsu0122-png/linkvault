@@ -2,6 +2,8 @@
 
 [![build](https://github.com/matsu0122-png/linkvault/actions/workflows/build.yaml/badge.svg)](https://github.com/matsu0122-png/linkvault/actions/workflows/build.yaml)
 
+[![Coverage Status](https://coveralls.io/repos/github/matsu0122-png/linkvault/badge.svg?branch=main)](https://coveralls.io/github/matsu0122-png/linkvault?branch=main)
+
 > Webで見つけた大切な情報を、あとから簡単に見つけられるように。
 
 
