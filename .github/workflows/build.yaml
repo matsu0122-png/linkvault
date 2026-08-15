@@ -103,7 +103,8 @@ jobs:
       - name: Send coverage to Coveralls
         uses: shogo82148/actions-goveralls@v1
         with:
-          path-to-profile: backend/coverage.out
+          working-directory: backend
+          path-to-profile: coverage.out
 
       - name: Build
         run: go build ./...
