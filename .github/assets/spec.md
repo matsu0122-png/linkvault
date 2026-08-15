@@ -19,11 +19,30 @@ config/        環境変数の読み込み
 database/      DB接続
 ```
 
-`service`パッケージは呼び出し先（`linkRepository`・`metadataFetcher`）のインターフェースを自パッケージ内で定義し、`repository`・`fetcher`パッケージの具象型を受け取る（Goの「利用側でインターフェースを定義する」慣習に従う）。
+`service`パッケージは呼び出し先（`linkRepository`・`collectionRepository`・`metadataFetcher`）のインターフェースを自パッケージ内で定義し、`repository`・`fetcher`パッケージの具象型を受け取る（Goの「利用側でインターフェースを定義する」慣習に従う）。`LinkService`と`CollectionService`はどちらも`service`パッケージ内の別ファイルとして実装し、Collection用に新しいパッケージを分けることはしていない（既存の`handler`/`repository`/`model`もentityごとにファイルを分けるだけで、レイヤーパッケージ自体は1つのまま）。
+
+### エラーハンドリングの方針
+
+`handler`はエラーを大きく3種類に分けて扱う。
+
+1. **`errors.Is`で判定できる既知のエラー**（`service.ErrNotFound`・`service.ErrDuplicateName`等）→ それぞれ意味に応じた明確なステータス（404・409等）
+2. **`*service.ValidationError`**（`errors.As`で判定）→ ユーザー入力が原因の失敗として`400 Bad Request`、メッセージをそのままクライアントへ返す（例:「url is required」）
+3. **上記のどちらでもないエラー**（DB接続断など想定外の失敗）→ `500 Internal Server Error`を返し、詳細はクライアントに公開せずサーバーログにのみ記録する
+
+この分類は`handler.writeServiceError`という共通ヘルパーに集約している。`service`層のバリデーション関数（`CreateLink`の`url is required`、`validateCollectionName`等）は`errors.New`ではなく`*service.ValidationError`を返すことで、この分類がhandler側で機械的に行えるようにしている。以前は「既知のエラー以外はすべて400・エラー内容をそのまま返す」という実装になっており、内部エラーの誤ったステータスコードとエラー詳細の露出という問題があったため、v1.0でこの方式に修正した。
+
+### 実行構成
+
+LinkVaultは「ローカルに直接プロセスを起動する」「Docker Composeでコンテナとして起動する」の2通りの実行方法を持つが、アプリケーションコード（Go/TypeScript）はどちらの方法でも同一で、実行方法を意識した分岐は一切含まない。すべて環境変数経由の設定注入（`config.Load()` / `import.meta.env.VITE_API_BASE_URL`）で完結しており、これはDocker化以前から成立していた設計である（具体的なコマンドはREADME.mdの該当節を参照。ここでは重複を避けるため仕組みのみ記す）。
+
+* **backend↔db間の接続先**: Docker Compose環境では`DB_HOST`にPostgreSQLコンテナのservice name（`db`）を渡す。これはコンテナ間の内部ネットワーク通信であり、ブラウザやChrome拡張からは見えない
+* **frontend→backend間の接続先**（`VITE_API_BASE_URL`）: **ブラウザから見えるURL**（例: `http://localhost:8080`）を渡す。Viteのビルド時に静的ファイルへ埋め込まれる値のため、コンテナ起動後に変更しても反映されない（再ビルドが必要）。`backend`のservice name（`http://backend:8080`）を渡すのは誤り（ブラウザはDocker内部ネットワークを解決できない）
+* **CORS**: `CORS_ALLOWED_ORIGIN`はDocker化の有無に関わらず`http://localhost:5173`のまま変わらない。ブラウザが実際にアクセスするオリジンはDocker化前後で変化しないため
+* **migration適用**: Docker環境では、PostgreSQL公式イメージの`/docker-entrypoint-initdb.d/`にマウントした`backend/migrations/*.sql`を、データディレクトリが空の初回起動時にファイル名順（`0001_`〜）で自動実行させている。CI（GitHub Actions）で使っている「`psql -f`をファイル名順に適用する」というmigration方式そのものは変更していない。Docker用の別migrationツールは導入していない
 
 ## データ設計
 
-PostgreSQLで以下の3テーブルを管理する。
+PostgreSQLで以下の5テーブルを管理する。
 
 ### links
 
@@ -65,6 +84,34 @@ PostgreSQLで以下の3テーブルを管理する。
 
 タグ名はアプリケーション側（`service.normalizeTags`）で前後の空白除去・重複除去を行ってから保存する。
 
+### collections
+
+Tagとは別に、リンクを「どのグループにまとめるか」を表すCollectionを管理する（Tagは「どんな属性を持つか」を表す。両者の詳細な役割の違いは後述「## Collection」参照）。
+
+| 項目          | 型         | 説明                              |
+| ----------- | --------- | ------------------------------- |
+| id          | BIGSERIAL | 主キー                             |
+| name        | TEXT      | Collection名（`UNIQUE`制約）         |
+| description | TEXT      | Collectionの説明（`NOT NULL DEFAULT ''`） |
+| parent_id   | BIGINT    | 親Collectionの`id`への自己参照外部キー（`NULL`可、`ON DELETE SET NULL`） |
+| created_at  | TIMESTAMP | 登録日時                            |
+| updated_at  | TIMESTAMP | 最終更新日時                          |
+
+`name`を`UNIQUE`制約にしているのは`tags.name`と同じ理由（後述「## Collection」の「Collection名の重複」参照）。
+
+`parent_id`はCollectionの入れ子構造（Collectionの中にさらにCollectionを作る）を表す自己参照外部キー。`NULL`は最上位のCollectionを意味する。`ON DELETE SET NULL`により、親Collectionを削除しても子Collectionは削除されず、`parent_id`が`NULL`になって最上位へ昇格する（詳細は後述「## Collection」の「入れ子構造」参照）。
+
+### collection_links
+
+`links`と`collections`のN:N関係を表す中間テーブル。`link_tags`と同じ構造を採用する。
+
+| 項目            | 型      | 説明                                       |
+| ------------- | ------ | ---------------------------------------- |
+| collection_id | BIGINT | `collections.id`への外部キー（`ON DELETE CASCADE`） |
+| link_id       | BIGINT | `links.id`への外部キー（`ON DELETE CASCADE`）      |
+
+主キーは`(collection_id, link_id)`の複合キーとし、同一リンクの同一Collectionへの重複登録をDBレベルで防止する。`collection_id`側のCASCADEにより、Collectionを削除しても`links`本体は削除されず、`collection_links`の関連行のみが削除される（詳細は「## Collection」参照）。
+
 ## API設計
 
 フロントエンドとバックエンドはJSON形式のHTTP APIで通信する。
@@ -77,31 +124,53 @@ GET /api/links
 
 クエリパラメータ（いずれも省略可）：
 
-| パラメータ | 説明                                          |
-| ----- | ------------------------------------------- |
-| `q`   | `url` / `title` / `memo`への部分一致（大文字小文字を区別しない） |
-| `tag` | タグ名の完全一致による絞り込み                             |
+| パラメータ   | 説明                                                     |
+| ------- | ------------------------------------------------------ |
+| `q`     | `url` / `title` / `memo`への部分一致（大文字小文字を区別しない）            |
+| `tag`   | タグ名の完全一致による絞り込み                                         |
+| `page`  | ページ番号（1始まり）。デフォルト`1`                                    |
+| `limit` | 1ページあたりの件数。デフォルト`20`、最大`100`                             |
+| `sort`  | 並び順。`created_at_desc`（デフォルト） / `created_at_asc` / `updated_at_desc` / `updated_at_asc` / `title_asc` / `title_desc` |
+| `collection` | Collection IDによる絞り込み。指定したCollectionに所属するリンクのみ返す |
+
+`q` / `tag` / `collection`による絞り込みと`page`/`limit`/`sort`は自由に組み合わせられる（例: `GET /api/links?q=golang&tag=Go&collection=3&page=2&limit=20&sort=title_asc`）。`page` / `limit` / `sort` / `collection`は未指定・空・数値として不正・許可された値の範囲外のいずれであっても`400`にはならず、それぞれのデフォルト値（`collection`は「絞り込み無し」）へフォールバックする（`limit`が最大値を超える場合は最大値へクランプする）。これは`q` / `tag`が元々どんな値でも受け付ける（バリデーション無し）方針と揃えたもので、ページネーション・並び替え・Collection絞り込みは「表示上の調整」であり、リクエスト自体を失敗させる理由にはしない、という設計判断による。存在しないCollection IDを指定した場合はエラーにはならず、単に0件が返る（`tag`に存在しない値を指定した場合と同じ扱い）。
 
 出力例：
 
 ```json
-[
-  {
-    "id": 1,
-    "url": "https://go.dev/doc/",
-    "title": "Go Documentation",
-    "memo": "Goの公式ドキュメント",
-    "tags": ["Go", "backend"],
-    "description": "Go言語の公式ドキュメント",
-    "image_url": "https://go.dev/images/og-image.png",
-    "favicon_url": "https://go.dev/favicon.ico",
-    "status": "ok",
-    "checked_at": "2026-08-14T10:00:00Z",
-    "created_at": "2026-08-14T09:30:00Z",
-    "updated_at": "2026-08-14T09:30:00Z"
+{
+  "links": [
+    {
+      "id": 1,
+      "url": "https://go.dev/doc/",
+      "title": "Go Documentation",
+      "memo": "Goの公式ドキュメント",
+      "tags": ["Go", "backend"],
+      "description": "Go言語の公式ドキュメント",
+      "image_url": "https://go.dev/images/og-image.png",
+      "favicon_url": "https://go.dev/favicon.ico",
+      "status": "ok",
+      "checked_at": "2026-08-14T10:00:00Z",
+      "created_at": "2026-08-14T09:30:00Z",
+      "updated_at": "2026-08-14T09:30:00Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 83,
+    "totalPages": 5
   }
-]
+}
 ```
+
+`pagination.total`は`q` / `tag`による絞り込み適用後の件数（現在のページの件数ではなく、全ページ合計の件数）。`totalPages`は`ceil(total / limit)`（`total`が0の場合は`0`）。
+
+**並び順の安定性**: `sort`が指定するカラムだけでは同値が発生しうる（例: 同時刻に一括登録された複数リンクの`created_at`が同じ、あるいは複数リンクが同じタイトル）ため、必ず`id`を第2キーとして付加する（`created_at_desc`なら`ORDER BY created_at DESC, id DESC`）。これにより、ページを移動してもリンクの重複・欠落が起きない。
+
+**SQLインジェクション対策**: `ORDER BY`句はプレースホルダで値を渡せない（カラム名・方向を文字列結合で組み立てる必要がある）ため、`sort`の生の文字列を直接SQLへ混ぜることはしない。`service`層で許可された6値のいずれかにマッチするかを検証し（不一致ならデフォルトへフォールバック）、`repository`層でも改めて許可値ごとに固定のORDER BY文字列を返すswitch文を経由させる二重の防御を行っている。
+
+`GET /api/links`が返す一覧の総件数・ページ内容は、`WHERE`句（`q` / `tag` / `collection`条件）をGoの文字列定数として1箇所にまとめ、件数取得（`COUNT(*)`）と一覧取得の両方のSQLで共有することで、フィルタ条件のズレによる件数とページ内容の不整合を防いでいる。
 
 ### リンクの登録
 
@@ -204,7 +273,7 @@ POST /api/links/check
 
 保存されている**全リンク**を対象に、現在アクセス可能かどうかを再チェックする。リクエストボディは無し。定期実行するバックグラウンドジョブは無く、このAPIを呼ぶことでのみ実行される（手動トリガーのみ）。フロントエンドは「リンク切れをチェック」ボタンから呼び出す。
 
-出力はチェック後の全リンク一覧（`GET /api/links`と同じ形式、フィルタなし）。
+出力はチェック後の全リンク一覧を配列でそのまま返す（`{"links": [...], "pagination": {...}}`のようなページネーションのenvelopeは持たない）。「全リンクの状態を一括更新する」操作であり、ページや並び替えといった表示上の概念とは無関係なため、`GET /api/links`とはレスポンス形式が異なる。
 
 チェック対象のリンクが多い場合でも、`POST /api/links/bulk`と同じgoroutine + セマフォ（上限`maxConcurrentFetches`＝5）で並行にチェックする。1件のチェック失敗（タイムアウト・接続エラー等）が他のリンクのチェックを妨げない。
 
@@ -215,6 +284,153 @@ POST /api/links/check
 * `checked_at`は実行時刻（サーバー時刻）で更新する
 
 `CheckAlive`は`FetchMetadata`と同じ`http.Client`（SSRF対策・タイムアウト設定込み）を使い、GETリクエストのステータスコードのみを見る（ボディはHTMLパースせず読み捨てる）。
+
+## Collection
+
+### 目的とTagとの違い
+
+Tagが「リンクがどんな属性を持つか」を表すのに対し、Collectionは「リンクをどのグループにまとめるか」を表す。両者は独立した機能であり、一方が他方を置き換えるものではない。
+
+| | Tag | Collection |
+| --- | --- | --- |
+| 役割 | リンクの属性ラベル | リンクのグループ分け |
+| Linkとの関係 | N:N（`link_tags`） | N:N（`collection_links`） |
+| 独自メタ情報 | 名前のみ | 名前・説明文 |
+| 入力UI | フリーテキスト＋チップ入力（`TagInput`） | 既存Collectionからのチェックボックス選択（`CollectionSelect`） |
+
+1つのLinkは複数のCollectionへ同時に所属できる（例: 「Go学習」と「お気に入り」の両方）。
+
+### 入れ子構造
+
+Collectionは`parent_id`により、Collectionの中にさらにCollectionを作る入れ子構造を持てる（例: 「お気に入り」の中に「新作アニメ」を作る）。深さの制限は設けていない。
+
+**親の指定は作成時のみ**: `parent_id`は`POST /api/collections`でのみ指定できる。作成後に別の場所へ移動する（親を変更する）APIは存在しない。この制約により、「あるCollectionを自分自身の子孫の下へ移動して循環参照を作ってしまう」というケースが構造的に発生しない（新しく作られたCollectionにはまだ子孫が存在しないため、循環のしようがない）。将来的に移動機能を追加する場合は、移動先が自分自身の子孫でないかを確認する循環検出ロジックが別途必要になる。
+
+**親の削除**: 親Collectionを削除しても子Collectionは削除されない。`parent_id`カラムの`ON DELETE SET NULL`により、子は自動的に最上位（`parent_id = NULL`）へ昇格する。子Collectionに紐づくLink自体も、既存の「Collection削除時の挙動」と同様に一切削除されない。
+
+**Link一覧との関係**: `GET /api/links?collection=:id`は、そのCollectionに**直接**紐付けられたLinkのみを返す。子Collectionに属するLinkは含まない（再帰的な集計はしない）。`link_count`も同様に直属のLinkの件数のみで、子孫の件数は合算しない。子Collectionの中身を見るには、サイドバーでその子Collectionへ直接遷移する。これはSQLをシンプルに保つための設計判断であり、「親を開けば子の中身も全部見える」という体験は現時点では提供しない。
+
+### Collectionの一覧取得
+
+```text
+GET /api/collections
+```
+
+クエリパラメータ（省略可）：
+
+| パラメータ | 説明 |
+| --- | --- |
+| `link_id` | 指定した場合、そのLinkが所属するCollectionのみ返す。省略時は全件返す |
+
+`name`の昇順で返す。出力は配列（ページネーションは行わない。個人利用規模でCollection数が多くなることは想定していないため）。
+
+出力例：
+
+```json
+[
+  {
+    "id": 1,
+    "name": "Go学習",
+    "description": "Go関連の学習資料",
+    "parent_id": null,
+    "link_count": 12,
+    "created_at": "2026-08-15T09:00:00Z",
+    "updated_at": "2026-08-15T09:00:00Z"
+  },
+  {
+    "id": 2,
+    "name": "サブスク",
+    "description": "",
+    "parent_id": 1,
+    "link_count": 3,
+    "created_at": "2026-08-15T09:05:00Z",
+    "updated_at": "2026-08-15T09:05:00Z"
+  }
+]
+```
+
+`link_count`は`collection_links`をCOUNTした値で、一覧取得のたびに動的に計算する（非正規化して`collections`テーブルへ保持することはしていない）。子孫Collectionの件数は含まない（前述「入れ子構造」参照）。
+
+レスポンスは常にフラットな配列で、木構造への組み立て（`parent_id`を辿って親子関係を復元する処理）はフロントエンド側（`features/collections/tree.ts`）で行う。バックエンドは`parent_id`を返すだけで、階層を意識したレスポンス形式は持たない。
+
+`link_id`パラメータは、Link編集フォームが「このLinkは現在どのCollectionに所属しているか」を知るために使う。Linkモデル自体には所属Collectionの情報を持たせておらず（`GET /api/links`のレスポンスに`collection_ids`のような欄はない）、必要なときにこのパラメータで都度取得する設計にしている。既存の`Link`のSQL・モデル・テストに一切手を加えずに済む、低リスクな設計を優先した。
+
+### Collectionの登録
+
+```text
+POST /api/collections
+```
+
+入力例（最上位に作成する場合）：
+
+```json
+{ "name": "Go学習", "description": "Go関連の学習資料" }
+```
+
+入力例（既存Collectionの子として作成する場合）：
+
+```json
+{ "name": "サブスク", "description": "", "parent_id": 1 }
+```
+
+`name`は前後の空白を除去したうえで必須（空文字・空白のみは`400`）、100文字を超える場合も`400`。`name`が既存のCollectionと重複する場合は`409 Conflict`を返す（`collections.name`の`UNIQUE`制約違反を検知）。`parent_id`は省略可（省略・`null`なら最上位のCollectionとして作成）。指定した`parent_id`が存在しない場合は`404 Not Found`を返す。成功時は`201 Created`で作成されたCollection（`link_count: 0`）を返す。
+
+### Collectionの詳細取得
+
+```text
+GET /api/collections/:id
+```
+
+指定されたIDのCollectionを返す（`GET /api/collections`の1件分と同じ形式）。対象が存在しない場合は`404 Not Found`。所属するLinkの一覧はこのAPIには含まれない。`GET /api/links?collection=:id`で別途取得する（後述）。
+
+### Collectionの更新
+
+```text
+PUT /api/collections/:id
+```
+
+リクエストボディは`POST`と同じ形式（`name` / `description`）。バリデーション・重複チェックも`POST`と同様。対象が存在しない場合は`404 Not Found`。`collection_links`（所属Link）はこのAPIでは変更されない。
+
+### Collectionの削除
+
+```text
+DELETE /api/collections/:id
+```
+
+指定されたIDのCollectionを削除する。成功時は`204 No Content`。対象が存在しない場合は`404 Not Found`。
+
+**削除してもLink本体は削除されない。** `collection_links`の該当行はCASCADEで自動削除されるが、`links`テーブルの行はそのまま残る。他のCollectionへの所属や「すべてのリンク」からは引き続き参照できる。
+
+**子Collectionも削除されない。** 削除したCollectionに子Collectionがあった場合、子は削除されず最上位（`parent_id = NULL`）へ昇格する（前述「入れ子構造」参照）。
+
+### CollectionへのLink追加
+
+```text
+POST /api/collections/:id/links
+```
+
+入力例：
+
+```json
+{ "link_id": 5 }
+```
+
+成功時は`204 No Content`。指定したCollectionが存在しない場合は`404 Not Found`（`Collection not found`）。指定した`link_id`が存在しない場合も`404 Not Found`（`Link not found`）。
+
+**既に追加済みのLinkを再度追加した場合**は、エラーにはせず成功（`204`）として扱う（`collection_links`への`INSERT ... ON CONFLICT (collection_id, link_id) DO NOTHING`により、状態は変化しないがリクエスト自体は成功する）。「既にそのCollectionに入っている」という状態を実現しようとした操作として扱い、冪等に成功させる設計とした。
+
+### CollectionからのLink削除
+
+```text
+DELETE /api/collections/:id/links/:linkId
+```
+
+指定したCollectionから指定したLinkの関連付けのみを削除する（Link本体は削除されない）。成功時は`204 No Content`。指定した組み合わせが元々紐付いていない場合は`404 Not Found`。
+
+### Link一覧・Link編集フォームとの連携
+
+- `GET /api/links`の`collection`パラメータ（前述）により、「特定のCollectionに所属するLinkだけを検索・タグ絞り込み・ページネーション・並び替え付きで一覧取得する」機能を、新しいエンドポイントを追加せずに実現している。Collection詳細画面はこの仕組みの上に成り立っており、`GET /api/collections/:id`（メタ情報）と`GET /api/links?collection=:id`（所属Link一覧）を組み合わせて表示する
+- Link作成・編集フォームのCollection選択は、`POST /api/collections`ではなく`POST /api/collections/:id/links` / `DELETE /api/collections/:id/links/:linkId`を通じて行う。Linkの作成・更新（`POST` / `PUT /api/links`）のリクエストボディに`collection_ids`のような欄は存在しない。フロントエンドはLink保存後に、選択されたCollectionとの差分（追加分・削除分）だけを計算し、上記2つのAPIを必要な回数だけ呼び出す
 
 ## クライアントとCORS
 
@@ -351,6 +567,18 @@ Chrome拡張（`extension/`）は現時点でタグ入力欄がカンマ区切�
 その他、README.mdのRoadmapに記載の以下も未実装である。
 
 * AIによる要約・自動タグ生成
-* より高度な全文検索（現在は`ILIKE`による部分一致のみ）
+* より高度な全文検索（現在は`ILIKE`による部分一致のみ。ページネーション自体は実装済みで、全文検索が高度化されても`page`/`limit`/`sort`の仕組みはそのまま使える設計になっている）
 
 これらは現時点で設計・実装を行っていないため、対応するフィールドや抽象化を先回りして追加することはしない。
+
+Collection機能についても、以下は今回実装していない（将来検討）。
+
+* Chrome拡張から保存時にCollectionを指定する機能（現状`extension/`はCollection非対応）
+* Collectionのアイコン・色分け
+* Collectionの並び替え（現状は`name`昇順固定）
+* Collectionのお気に入り登録
+* Collectionの共有・公開URL（例:「Go初心者におすすめのサイト集」を外部に公開する）
+* Collection単位でのリンクのエクスポート
+* サイドバーでのTag一覧表示（現状はLink行のタグピルをクリックする既存の絞り込み動線のみ。Tag一覧を返すAPIも現時点では存在しない）
+
+これらを見越した抽象化（例: Collectionへの`icon`カラムや`sort_order`カラムの先行追加）は行っていない。
