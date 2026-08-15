@@ -25,6 +25,10 @@ func main() {
 	linkService := service.NewLinkService(linkRepo, fetcher.New())
 	linkHandler := handler.NewLinkHandler(linkService)
 
+	collectionRepo := repository.NewCollectionRepository(db)
+	collectionService := service.NewCollectionService(collectionRepo)
+	collectionHandler := handler.NewCollectionHandler(collectionService)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/links", linkHandler.ListLinks)
 	mux.HandleFunc("POST /api/links", linkHandler.CreateLink)
@@ -32,6 +36,14 @@ func main() {
 	mux.HandleFunc("POST /api/links/check", linkHandler.CheckLinks)
 	mux.HandleFunc("PUT /api/links/{id}", linkHandler.UpdateLink)
 	mux.HandleFunc("DELETE /api/links/{id}", linkHandler.DeleteLink)
+
+	mux.HandleFunc("GET /api/collections", collectionHandler.ListCollections)
+	mux.HandleFunc("POST /api/collections", collectionHandler.CreateCollection)
+	mux.HandleFunc("GET /api/collections/{id}", collectionHandler.GetCollection)
+	mux.HandleFunc("PUT /api/collections/{id}", collectionHandler.UpdateCollection)
+	mux.HandleFunc("DELETE /api/collections/{id}", collectionHandler.DeleteCollection)
+	mux.HandleFunc("POST /api/collections/{id}/links", collectionHandler.AddLink)
+	mux.HandleFunc("DELETE /api/collections/{id}/links/{linkId}", collectionHandler.RemoveLink)
 
 	log.Println("LinkVault backend started on :8080")
 

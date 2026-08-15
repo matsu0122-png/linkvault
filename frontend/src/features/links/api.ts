@@ -1,4 +1,4 @@
-import type { Link } from './types'
+import type { Link, LinksResponse, SortOption } from './types'
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080'
@@ -6,12 +6,20 @@ const API_BASE_URL =
 export type LinkFilter = {
   query?: string
   tag?: string
+  page?: number
+  sort?: SortOption
+  collectionId?: number
 }
 
-export async function fetchLinks(filter: LinkFilter = {}): Promise<Link[]> {
+export async function fetchLinks(
+  filter: LinkFilter = {},
+): Promise<LinksResponse> {
   const params = new URLSearchParams()
   if (filter.query) params.set('q', filter.query)
   if (filter.tag) params.set('tag', filter.tag)
+  if (filter.page) params.set('page', String(filter.page))
+  if (filter.sort) params.set('sort', filter.sort)
+  if (filter.collectionId) params.set('collection', String(filter.collectionId))
 
   const res = await fetch(`${API_BASE_URL}/api/links?${params}`)
   if (!res.ok) {

@@ -2,21 +2,31 @@ import { useState, type FormEvent } from 'react'
 import Button from '../../../components/ui/Button'
 import Input from '../../../components/ui/Input'
 import TagInput from '../../../components/ui/TagInput'
+import CollectionSelect from '../../collections/components/CollectionSelect'
+import type { Collection } from '../../collections/types'
 
 export type LinkFormValues = {
   url: string
   title: string
   memo: string
   tags: string[]
+  collectionIds: number[]
 }
 
-const emptyValues: LinkFormValues = { url: '', title: '', memo: '', tags: [] }
+const emptyValues: LinkFormValues = {
+  url: '',
+  title: '',
+  memo: '',
+  tags: [],
+  collectionIds: [],
+}
 
 type Props = {
   initialValues?: LinkFormValues
   submitLabel: string
   onSubmit: (values: LinkFormValues) => Promise<void>
   onCancel?: () => void
+  collections: Collection[]
 }
 
 function LinkForm({
@@ -24,6 +34,7 @@ function LinkForm({
   submitLabel,
   onSubmit,
   onCancel,
+  collections,
 }: Props) {
   const [values, setValues] = useState(initialValues)
   const [submitting, setSubmitting] = useState(false)
@@ -79,6 +90,14 @@ function LinkForm({
           onChange={(tags) => update('tags', tags)}
           className="sm:col-span-4"
         />
+        <div className="sm:col-span-4">
+          <p className="mb-1 text-xs text-stone-500">Collection</p>
+          <CollectionSelect
+            collections={collections}
+            selectedIds={values.collectionIds}
+            onChange={(ids) => update('collectionIds', ids)}
+          />
+        </div>
       </div>
       <div className="flex gap-2">
         <Button type="submit" disabled={submitting}>

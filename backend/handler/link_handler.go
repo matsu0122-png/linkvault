@@ -27,17 +27,24 @@ type linkRequest struct {
 	Tags  []string `json:"tags"`
 }
 
-func (h *LinkHandler) ListLinks(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("q")
-	tag := r.URL.Query().Get("tag")
+type listLinksResponse struct {
+	Links      []model.Link     `json:"links"`
+	Pagination model.Pagination `json:"pagination"`
+}
 
-	links, err := h.service.ListLinks(query, tag)
+func (h *LinkHandler) ListLinks(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	result, err := h.service.ListLinks(q.Get("q"), q.Get("tag"), q.Get("page"), q.Get("limit"), q.Get("sort"), q.Get("collection"))
 	if err != nil {
 		http.Error(w, "Failed to fetch links", http.StatusInternalServerError)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, links)
+	writeJSON(w, http.StatusOK, listLinksResponse{
+		Links:      result.Links,
+		Pagination: result.Pagination,
+	})
 }
 
 func (h *LinkHandler) CreateLink(w http.ResponseWriter, r *http.Request) {
@@ -48,8 +55,7 @@ func (h *LinkHandler) CreateLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	link, err := h.service.CreateLink(req.URL, req.Title, req.Memo, req.Tags)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if writeServiceError(w, err) {
 		return
 	}
 
@@ -128,8 +134,7 @@ func (h *LinkHandler) UpdateLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Link not found", http.StatusNotFound)
 		return
 	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if writeServiceError(w, err) {
 		return
 	}
 
@@ -169,4 +174,26 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		log.Println("failed to encode response:", err)
 	}
+}
+
+// writeServiceError writes an HTTP response for a service-layer error that
+// wasn't already handled by a more specific errors.Is check, and reports
+// whether it wrote anything. A *service.ValidationError's message is safe
+// to show the client (400); anything else is treated as an internal failure
+// (500) and logged instead of exposing its message, since it could be a raw
+// DB error or similar.
+func writeServiceError(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var verr *service.ValidationError
+	if errors.As(err, &verr) {
+		http.Error(w, verr.Error(), http.StatusBadRequest)
+		return true
+	}
+
+	log.Println("internal error:", err)
+	http.Error(w, "Internal server error", http.StatusInternalServerError)
+	return true
 }

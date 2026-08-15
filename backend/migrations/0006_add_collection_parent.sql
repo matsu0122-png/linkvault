@@ -1,0 +1,2 @@
+ALTER TABLE collections
+    ADD COLUMN IF NOT EXISTS parent_id BIGINT REFERENCES collections(id) ON DELETE SET NULL;

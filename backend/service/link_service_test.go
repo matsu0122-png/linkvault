@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,7 @@ import (
 type mockLinkRepository struct {
 	createFn       func(link model.Link) (model.Link, error)
 	listFn         func(query, tag string) ([]model.Link, error)
+	listPageFn     func(query, tag string, collectionID int, sort model.SortOption, limit, offset int) ([]model.Link, int, error)
 	updateFn       func(link model.Link) (model.Link, error)
 	deleteFn       func(id int) error
 	updateStatusFn func(id int, status string, checkedAt time.Time) error
@@ -26,6 +28,10 @@ func (m *mockLinkRepository) Create(link model.Link) (model.Link, error) {
 
 func (m *mockLinkRepository) List(query, tag string) ([]model.Link, error) {
 	return m.listFn(query, tag)
+}
+
+func (m *mockLinkRepository) ListPage(query, tag string, collectionID int, sort model.SortOption, limit, offset int) ([]model.Link, int, error) {
+	return m.listPageFn(query, tag, collectionID, sort, limit, offset)
 }
 
 func (m *mockLinkRepository) Update(link model.Link) (model.Link, error) {
@@ -388,26 +394,242 @@ func TestCheckLinks(t *testing.T) {
 }
 
 func TestListLinks(t *testing.T) {
-	want := []model.Link{{ID: 1, URL: "https://example.com"}}
-	var gotQuery, gotTag string
-	repo := &mockLinkRepository{
-		listFn: func(query, tag string) ([]model.Link, error) {
-			gotQuery, gotTag = query, tag
-			return want, nil
-		},
-	}
-	s := NewLinkService(repo, unusedFetcher(t))
+	t.Run("query/tagをそのままrepositoryへ渡す", func(t *testing.T) {
+		want := []model.Link{{ID: 1, URL: "https://example.com"}}
+		var gotQuery, gotTag string
+		repo := &mockLinkRepository{
+			listPageFn: func(query, tag string, collectionID int, sort model.SortOption, limit, offset int) ([]model.Link, int, error) {
+				gotQuery, gotTag = query, tag
+				return want, 1, nil
+			},
+		}
+		s := NewLinkService(repo, unusedFetcher(t))
 
-	got, err := s.ListLinks("example", "Go")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(got) != 1 || got[0].ID != want[0].ID {
-		t.Errorf("unexpected links: %+v", got)
-	}
-	if gotQuery != "example" || gotTag != "Go" {
-		t.Errorf("expected query/tag to be passed through, got query=%q tag=%q", gotQuery, gotTag)
-	}
+		result, err := s.ListLinks("example", "Go", "1", "20", "", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result.Links) != 1 || result.Links[0].ID != want[0].ID {
+			t.Errorf("unexpected links: %+v", result.Links)
+		}
+		if gotQuery != "example" || gotTag != "Go" {
+			t.Errorf("expected query/tag to be passed through, got query=%q tag=%q", gotQuery, gotTag)
+		}
+	})
+
+	t.Run("page/limitからoffsetを計算してrepositoryへ渡す", func(t *testing.T) {
+		var gotLimit, gotOffset int
+		repo := &mockLinkRepository{
+			listPageFn: func(query, tag string, collectionID int, sort model.SortOption, limit, offset int) ([]model.Link, int, error) {
+				gotLimit, gotOffset = limit, offset
+				return nil, 0, nil
+			},
+		}
+		s := NewLinkService(repo, unusedFetcher(t))
+
+		if _, err := s.ListLinks("", "", "3", "10", "", ""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotLimit != 10 || gotOffset != 20 {
+			t.Errorf("expected limit=10 offset=20 (page 3), got limit=%d offset=%d", gotLimit, gotOffset)
+		}
+	})
+
+	t.Run("page/limit省略時はデフォルト値(page=1,limit=20)を使う", func(t *testing.T) {
+		var gotLimit, gotOffset int
+		repo := &mockLinkRepository{
+			listPageFn: func(query, tag string, collectionID int, sort model.SortOption, limit, offset int) ([]model.Link, int, error) {
+				gotLimit, gotOffset = limit, offset
+				return nil, 0, nil
+			},
+		}
+		s := NewLinkService(repo, unusedFetcher(t))
+
+		result, err := s.ListLinks("", "", "", "", "", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotLimit != 20 || gotOffset != 0 {
+			t.Errorf("expected limit=20 offset=0, got limit=%d offset=%d", gotLimit, gotOffset)
+		}
+		if result.Pagination.Page != 1 || result.Pagination.Limit != 20 {
+			t.Errorf("unexpected pagination: %+v", result.Pagination)
+		}
+	})
+
+	t.Run("不正なpage/limitはデフォルト値へフォールバックする", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			page       string
+			limit      string
+			wantPage   int
+			wantLimit  int
+			wantOffset int
+		}{
+			{"pageが数値でない", "abc", "20", 1, 20, 0},
+			{"pageが0", "0", "20", 1, 20, 0},
+			{"pageが負数", "-1", "20", 1, 20, 0},
+			{"limitが数値でない", "1", "abc", 1, 20, 0},
+			{"limitが0", "1", "0", 1, 20, 0},
+			{"limitが負数", "1", "-10", 1, 20, 0},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var gotLimit, gotOffset int
+				repo := &mockLinkRepository{
+					listPageFn: func(query, tag string, collectionID int, sort model.SortOption, limit, offset int) ([]model.Link, int, error) {
+						gotLimit, gotOffset = limit, offset
+						return nil, 0, nil
+					},
+				}
+				s := NewLinkService(repo, unusedFetcher(t))
+
+				result, err := s.ListLinks("", "", tt.page, tt.limit, "", "")
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if result.Pagination.Page != tt.wantPage || gotLimit != tt.wantLimit || gotOffset != tt.wantOffset {
+					t.Errorf("got page=%d limit=%d offset=%d, want page=%d limit=%d offset=%d",
+						result.Pagination.Page, gotLimit, gotOffset, tt.wantPage, tt.wantLimit, tt.wantOffset)
+				}
+			})
+		}
+	})
+
+	t.Run("limitが最大値を超えたらクランプする", func(t *testing.T) {
+		var gotLimit int
+		repo := &mockLinkRepository{
+			listPageFn: func(query, tag string, collectionID int, sort model.SortOption, limit, offset int) ([]model.Link, int, error) {
+				gotLimit = limit
+				return nil, 0, nil
+			},
+		}
+		s := NewLinkService(repo, unusedFetcher(t))
+
+		if _, err := s.ListLinks("", "", "1", "1000000", "", ""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotLimit != maxLimit {
+			t.Errorf("expected limit clamped to %d, got %d", maxLimit, gotLimit)
+		}
+	})
+
+	t.Run("sortが未指定・不正な値なら created_at_desc へフォールバックする", func(t *testing.T) {
+		for _, raw := range []string{"", "unknown", "id_asc"} {
+			t.Run(raw, func(t *testing.T) {
+				var gotSort model.SortOption
+				repo := &mockLinkRepository{
+					listPageFn: func(query, tag string, collectionID int, sort model.SortOption, limit, offset int) ([]model.Link, int, error) {
+						gotSort = sort
+						return nil, 0, nil
+					},
+				}
+				s := NewLinkService(repo, unusedFetcher(t))
+
+				if _, err := s.ListLinks("", "", "1", "20", raw, ""); err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if gotSort != model.SortCreatedDesc {
+					t.Errorf("expected fallback to SortCreatedDesc, got %q", gotSort)
+				}
+			})
+		}
+	})
+
+	t.Run("有効なsort値はそのままrepositoryへ渡す", func(t *testing.T) {
+		for _, raw := range []model.SortOption{
+			model.SortCreatedDesc, model.SortCreatedAsc,
+			model.SortUpdatedDesc, model.SortUpdatedAsc,
+			model.SortTitleAsc, model.SortTitleDesc,
+		} {
+			t.Run(string(raw), func(t *testing.T) {
+				var gotSort model.SortOption
+				repo := &mockLinkRepository{
+					listPageFn: func(query, tag string, collectionID int, sort model.SortOption, limit, offset int) ([]model.Link, int, error) {
+						gotSort = sort
+						return nil, 0, nil
+					},
+				}
+				s := NewLinkService(repo, unusedFetcher(t))
+
+				if _, err := s.ListLinks("", "", "1", "20", string(raw), ""); err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if gotSort != raw {
+					t.Errorf("expected sort=%q, got %q", raw, gotSort)
+				}
+			})
+		}
+	})
+
+	t.Run("collectionパラメータをそのままrepositoryへ渡す", func(t *testing.T) {
+		var gotCollectionID int
+		repo := &mockLinkRepository{
+			listPageFn: func(query, tag string, collectionID int, sort model.SortOption, limit, offset int) ([]model.Link, int, error) {
+				gotCollectionID = collectionID
+				return nil, 0, nil
+			},
+		}
+		s := NewLinkService(repo, unusedFetcher(t))
+
+		if _, err := s.ListLinks("", "", "1", "20", "", "3"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotCollectionID != 3 {
+			t.Errorf("expected collectionID=3, got %d", gotCollectionID)
+		}
+	})
+
+	t.Run("collectionが未指定・不正な値なら絞り込み無し(0)になる", func(t *testing.T) {
+		for _, raw := range []string{"", "abc", "0", "-1"} {
+			t.Run(raw, func(t *testing.T) {
+				var gotCollectionID int
+				repo := &mockLinkRepository{
+					listPageFn: func(query, tag string, collectionID int, sort model.SortOption, limit, offset int) ([]model.Link, int, error) {
+						gotCollectionID = collectionID
+						return nil, 0, nil
+					},
+				}
+				s := NewLinkService(repo, unusedFetcher(t))
+
+				if _, err := s.ListLinks("", "", "1", "20", "", raw); err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if gotCollectionID != 0 {
+					t.Errorf("expected collectionID=0, got %d", gotCollectionID)
+				}
+			})
+		}
+	})
+
+	t.Run("totalPagesを計算する", func(t *testing.T) {
+		tests := []struct {
+			total, limit, want int
+		}{
+			{83, 20, 5},
+			{0, 20, 0},
+			{20, 20, 1},
+			{1, 20, 1},
+		}
+
+		for _, tt := range tests {
+			repo := &mockLinkRepository{
+				listPageFn: func(query, tag string, collectionID int, sort model.SortOption, limit, offset int) ([]model.Link, int, error) {
+					return nil, tt.total, nil
+				},
+			}
+			s := NewLinkService(repo, unusedFetcher(t))
+
+			result, err := s.ListLinks("", "", "1", strconv.Itoa(tt.limit), "", "")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Pagination.TotalPages != tt.want {
+				t.Errorf("totalPages(total=%d, limit=%d) = %d, want %d", tt.total, tt.limit, result.Pagination.TotalPages, tt.want)
+			}
+		}
+	})
 }
 
 func TestUpdateLink(t *testing.T) {

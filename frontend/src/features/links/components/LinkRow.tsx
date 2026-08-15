@@ -1,13 +1,22 @@
 import { useState } from 'react'
 import Button from '../../../components/ui/Button'
+import { fetchCollections } from '../../collections/api'
+import type { Collection } from '../../collections/types'
 import type { Link } from '../types'
+import LinkFavicon from './LinkFavicon'
 import LinkForm, { type LinkFormValues } from './LinkForm'
 
 type Props = {
   link: Link
-  onEdit: (id: number, values: LinkFormValues) => Promise<void>
+  onEdit: (id: number, values: LinkFormValues) => Promise<Link>
   onDelete: (id: number) => Promise<void>
   onTagClick: (tag: string) => void
+  collections: Collection[]
+  onCollectionsSync: (
+    linkId: number,
+    previousIds: number[],
+    nextIds: number[],
+  ) => Promise<void>
 }
 
 function hostname(url: string): string {
@@ -27,12 +36,28 @@ function statusTitle(link: Link): string {
     : `リンク切れの可能性（最終確認: ${checkedAt}）`
 }
 
-function LinkRow({ link, onEdit, onDelete, onTagClick }: Props) {
+function LinkRow({
+  link,
+  onEdit,
+  onDelete,
+  onTagClick,
+  collections,
+  onCollectionsSync,
+}: Props) {
   const [editing, setEditing] = useState(false)
+  // null = 所属Collectionを読み込み中。編集フォームはこれが揃うまで
+  // 表示しない（揃う前にチェック無しの状態で一瞬見えるのを避けるため）。
+  const [editCollectionIds, setEditCollectionIds] = useState<number[] | null>(
+    null,
+  )
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   async function handleDelete() {
+    if (!window.confirm(`「${link.title || link.url}」を削除しますか？`)) {
+      return
+    }
+
     setDeleting(true)
     setError(null)
 
@@ -44,7 +69,29 @@ function LinkRow({ link, onEdit, onDelete, onTagClick }: Props) {
     }
   }
 
+  async function startEditing() {
+    setEditing(true)
+    try {
+      const current = await fetchCollections(link.id)
+      setEditCollectionIds(current.map((c) => c.id))
+    } catch {
+      // 取得に失敗してもチェック無し状態で編集自体は続行できるようにする
+      setEditCollectionIds([])
+    }
+  }
+
+  function stopEditing() {
+    setEditing(false)
+    setEditCollectionIds(null)
+  }
+
   if (editing) {
+    if (editCollectionIds === null) {
+      return (
+        <li className="rounded-xl p-3 text-sm text-stone-400">読み込み中...</li>
+      )
+    }
+
     return (
       <li className="rounded-xl p-3">
         <LinkForm
@@ -53,13 +100,20 @@ function LinkRow({ link, onEdit, onDelete, onTagClick }: Props) {
             title: link.title,
             memo: link.memo,
             tags: link.tags,
+            collectionIds: editCollectionIds,
           }}
           submitLabel="保存"
+          collections={collections}
           onSubmit={async (values) => {
-            await onEdit(link.id, values)
-            setEditing(false)
+            const updated = await onEdit(link.id, values)
+            await onCollectionsSync(
+              updated.id,
+              editCollectionIds,
+              values.collectionIds,
+            )
+            stopEditing()
           }}
-          onCancel={() => setEditing(false)}
+          onCancel={stopEditing}
         />
       </li>
     )
@@ -75,16 +129,7 @@ function LinkRow({ link, onEdit, onDelete, onTagClick }: Props) {
             rel="noreferrer"
             className="inline-flex items-baseline gap-1.5 font-medium text-stone-800 hover:text-teal-600 hover:underline"
           >
-            {link.favicon_url && (
-              <img
-                src={link.favicon_url}
-                alt=""
-                className="h-3.5 w-3.5 shrink-0 translate-y-0.5 rounded-sm"
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none'
-                }}
-              />
-            )}
+            <LinkFavicon link={link} />
             {link.title || link.url}
           </a>
           <span className="inline-flex items-center gap-1 font-mono text-xs text-stone-400">
@@ -124,12 +169,12 @@ function LinkRow({ link, onEdit, onDelete, onTagClick }: Props) {
           </p>
         )}
       </div>
-      <div className="flex shrink-0 gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
+      <div className="flex shrink-0 gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100">
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          onClick={() => setEditing(true)}
+          onClick={startEditing}
         >
           編集
         </Button>

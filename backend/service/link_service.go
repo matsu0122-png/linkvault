@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,11 +22,18 @@ const (
 	// maxConcurrentFetches bounds how many URLs are fetched at once during a
 	// bulk create, to avoid hammering either this server or the target sites.
 	maxConcurrentFetches = 5
+
+	defaultPage  = 1
+	defaultLimit = 20
+	maxLimit     = 100
+
+	defaultSort = model.SortCreatedDesc
 )
 
 type linkRepository interface {
 	Create(link model.Link) (model.Link, error)
 	List(query, tag string) ([]model.Link, error)
+	ListPage(query, tag string, collectionID int, sort model.SortOption, limit, offset int) ([]model.Link, int, error)
 	Update(link model.Link) (model.Link, error)
 	Delete(id int) error
 	UpdateStatus(id int, status string, checkedAt time.Time) error
@@ -51,7 +59,7 @@ func NewLinkService(repo linkRepository, fetcher metadataFetcher) *LinkService {
 
 func (s *LinkService) CreateLink(url, title, memo string, tags []string) (model.Link, error) {
 	if url == "" {
-		return model.Link{}, errors.New("url is required")
+		return model.Link{}, newValidationError("url is required")
 	}
 
 	link := model.Link{
@@ -197,13 +205,81 @@ func normalizeTags(tags []string) []string {
 	return normalized
 }
 
-func (s *LinkService) ListLinks(query, tag string) ([]model.Link, error) {
-	return s.repo.List(query, tag)
+// ListLinksResult bundles a page of links with the pagination info the
+// client needs to render page controls.
+type ListLinksResult struct {
+	Links      []model.Link
+	Pagination model.Pagination
+}
+
+// ListLinks parses and validates the page/limit/sort/collection query
+// parameters and returns one page of links matching query/tag/collection.
+// Invalid or out-of-range values fall back to sensible defaults rather than
+// returning an error, consistent with query/tag (which already accept any
+// value without validation): pagination is a display refinement, not
+// something a request should fail over. A collectionParam that isn't a
+// positive integer (missing, empty, non-numeric) means "no collection
+// filter" — same fallback philosophy as everything else here.
+func (s *LinkService) ListLinks(query, tag, pageParam, limitParam, sortParam, collectionParam string) (ListLinksResult, error) {
+	page := parsePaginationValue(pageParam, defaultPage)
+	limit := parsePaginationValue(limitParam, defaultLimit)
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	sort := parseSort(sortParam)
+	collectionID := parsePaginationValue(collectionParam, 0)
+
+	offset := (page - 1) * limit
+
+	links, total, err := s.repo.ListPage(query, tag, collectionID, sort, limit, offset)
+	if err != nil {
+		return ListLinksResult{}, err
+	}
+
+	return ListLinksResult{
+		Links: links,
+		Pagination: model.Pagination{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages(total, limit),
+		},
+	}, nil
+}
+
+// parsePaginationValue parses raw as a positive integer, falling back to
+// fallback when raw is missing, not a number, or not positive.
+func parsePaginationValue(raw string, fallback int) int {
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return fallback
+	}
+	return n
+}
+
+func totalPages(total, limit int) int {
+	if total == 0 {
+		return 0
+	}
+	return (total + limit - 1) / limit
+}
+
+// parseSort validates raw against the known SortOption values, falling back
+// to defaultSort otherwise.
+func parseSort(raw string) model.SortOption {
+	switch model.SortOption(raw) {
+	case model.SortCreatedDesc, model.SortCreatedAsc,
+		model.SortUpdatedDesc, model.SortUpdatedAsc,
+		model.SortTitleAsc, model.SortTitleDesc:
+		return model.SortOption(raw)
+	default:
+		return defaultSort
+	}
 }
 
 func (s *LinkService) UpdateLink(id int, url, title, memo string, tags []string) (model.Link, error) {
 	if url == "" {
-		return model.Link{}, errors.New("url is required")
+		return model.Link{}, newValidationError("url is required")
 	}
 
 	link := model.Link{
