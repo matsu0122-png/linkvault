@@ -78,18 +78,32 @@ jobs:
 
       - name: Apply migrations
         run: |
-          psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -f migrations/0001_create_links_table.sql
-          psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -f migrations/0002_create_tags_tables.sql
-          psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -f migrations/0003_add_link_metadata.sql
-          psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -f migrations/0004_add_link_status.sql
+          for f in migrations/*.sql; do
+            echo "Applying $f"
+            psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -f "$f"
+          done
         env:
           PGPASSWORD: postgres
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt'ed:"
+            echo "$unformatted"
+            exit 1
+          fi
 
       - name: Vet
         run: go vet ./...
 
       - name: Test
-        run: go test ./...
+        run: go test ./... -coverprofile=coverage.out -covermode=atomic
+
+      - name: Send coverage to Coveralls
+        uses: shogo82148/actions-goveralls@v1
+        with:
+          path-to-profile: backend/coverage.out
 
       - name: Build
         run: go build ./...
